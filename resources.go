@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // EnrichmentsService manages saved enrichment configurations.
@@ -12,25 +13,91 @@ type EnrichmentsService struct {
 	client *Client
 }
 
-// List lists enrichments with their output column configuration. (operationId: listEnrichments)
-func (s *EnrichmentsService) List(ctx context.Context) ([]EnrichmentSummary, error) {
-	var response struct {
-		Enrichments []EnrichmentSummary `json:"enrichments"`
+// List returns a paginated compact list of enrichments: names, status, column
+// names and counts. (operationId: listEnrichments)
+func (s *EnrichmentsService) List(ctx context.Context, params *ListEnrichmentsParams) (*EnrichmentsPage, error) {
+	query := url.Values{}
+	page := 1
+	if params != nil {
+		if params.Status != "" {
+			query.Set("status", params.Status)
+		}
+		if params.Name != "" {
+			query.Set("name", params.Name)
+		}
+		if params.PerPage > 0 {
+			query.Set("per_page", strconv.Itoa(params.PerPage))
+		}
+		if params.Page > 0 {
+			page = params.Page
+		}
 	}
-	if err := s.client.request(ctx, http.MethodGet, "/enrichments", nil, nil, &response); err != nil {
-		return nil, err
-	}
-	return response.Enrichments, nil
+	return s.client.fetchEnrichmentsPage(ctx, query, page)
 }
 
-// Create creates an enrichment (no run) from a completed dataset build. (operationId: createEnrichment)
-func (s *EnrichmentsService) Create(ctx context.Context, datasetID string) (*Enrichment, error) {
-	body := map[string]string{"dataset_id": datasetID}
+// Summary returns all-time enrichment counts by status. (operationId: enrichmentsSummary)
+func (s *EnrichmentsService) Summary(ctx context.Context) (*EnrichmentsSummary, error) {
+	summary := &EnrichmentsSummary{}
+	if err := s.client.request(ctx, http.MethodGet, "/enrichments/summary", nil, nil, summary); err != nil {
+		return nil, err
+	}
+	return summary, nil
+}
+
+// EnrichmentsPage is one page of enrichments plus the pagination cursor.
+type EnrichmentsPage struct {
+	Enrichments []EnrichmentSummary `json:"enrichments"`
+	Pagination  Pagination          `json:"pagination"`
+
+	fetchPage func(ctx context.Context, page int) (*EnrichmentsPage, error)
+}
+
+// HasNextPage reports whether another page follows this one.
+func (p *EnrichmentsPage) HasNextPage() bool {
+	return p.Pagination.Page < p.Pagination.TotalPages
+}
+
+// NextPage fetches the following page, or ErrNoNextPage on the last one.
+func (p *EnrichmentsPage) NextPage(ctx context.Context) (*EnrichmentsPage, error) {
+	if !p.HasNextPage() {
+		return nil, ErrNoNextPage
+	}
+	return p.fetchPage(ctx, p.Pagination.Page+1)
+}
+
+func (c *Client) fetchEnrichmentsPage(ctx context.Context, baseQuery url.Values, page int) (*EnrichmentsPage, error) {
+	query := url.Values{}
+	for key, values := range baseQuery {
+		query[key] = values
+	}
+	query.Set("page", strconv.Itoa(page))
+
+	enrichmentsPage := &EnrichmentsPage{}
+	if err := c.request(ctx, http.MethodGet, "/enrichments", query, nil, enrichmentsPage); err != nil {
+		return nil, err
+	}
+	enrichmentsPage.fetchPage = func(ctx context.Context, nextPage int) (*EnrichmentsPage, error) {
+		return c.fetchEnrichmentsPage(ctx, baseQuery, nextPage)
+	}
+	return enrichmentsPage, nil
+}
+
+// Create saves an enrichment (no run). A recipe body — Prompt + Output — saves
+// the column configuration and makes an empty Dataset bound to it (DatasetID /
+// AppURL on the response); DatasetID alone takes the enrichment of a Dataset
+// or one shaped from a finished legacy list build. (operationId: createEnrichment)
+func (s *EnrichmentsService) Create(ctx context.Context, params CreateEnrichmentParams) (*Enrichment, error) {
 	enrichment := &Enrichment{}
-	if err := s.client.request(ctx, http.MethodPost, "/enrichments", nil, body, enrichment); err != nil {
+	if err := s.client.request(ctx, http.MethodPost, "/enrichments", nil, params, enrichment); err != nil {
 		return nil, err
 	}
 	return enrichment, nil
+}
+
+// Delete deletes a saved enrichment. Refused with 409 enrichment_in_use while
+// a fill runs on it. (operationId: deleteEnrichment)
+func (s *EnrichmentsService) Delete(ctx context.Context, id string) error {
+	return s.client.request(ctx, http.MethodDelete, "/enrichments/"+url.PathEscape(id), nil, nil, nil)
 }
 
 // Get returns the enrichment's input columns and output column configuration. (operationId: getEnrichment)
@@ -42,17 +109,20 @@ func (s *EnrichmentsService) Get(ctx context.Context, id string) (*Enrichment, e
 	return enrichment, nil
 }
 
-// Update adds, updates, renames, deletes, or reorders output columns. It
-// returns the raw response, which lists the applied changes. (operationId: updateEnrichment)
-func (s *EnrichmentsService) Update(ctx context.Context, id string, params UpdateEnrichmentParams) (map[string]any, error) {
-	response := map[string]any{}
-	if err := s.client.request(ctx, http.MethodPatch, "/enrichments/"+url.PathEscape(id), nil, params, &response); err != nil {
+// Update edits the enrichment: name, prompt, input columns, budget, tools, and
+// Output column operations (add / rename / delete by name) on a dataset-engine
+// enrichment; LegacyOutput + ColumnOrder on a legacy one. Refused with 409
+// enrichment_in_use while a fill runs on it. (operationId: updateEnrichment)
+func (s *EnrichmentsService) Update(ctx context.Context, id string, params UpdateEnrichmentParams) (*Enrichment, error) {
+	enrichment := &Enrichment{}
+	if err := s.client.request(ctx, http.MethodPatch, "/enrichments/"+url.PathEscape(id), nil, params, enrichment); err != nil {
 		return nil, err
 	}
-	return response, nil
+	return enrichment, nil
 }
 
-// BuildDataset builds a dataset shaped for this enrichment. (operationId: buildDatasetForEnrichment)
+// BuildDataset is the legacy list build shaped for an enrichment. New work:
+// Datasets.BuildRows on the enrichment's dataset. (operationId: buildDatasetForEnrichment)
 func (s *EnrichmentsService) BuildDataset(ctx context.Context, id string, params BuildDatasetForEnrichmentParams) (*Run, error) {
 	run := &Run{}
 	if err := s.client.request(ctx, http.MethodPost, "/enrichments/"+url.PathEscape(id)+"/datasets", nil, params, run); err != nil {
@@ -61,13 +131,167 @@ func (s *EnrichmentsService) BuildDataset(ctx context.Context, id string, params
 	return run, nil
 }
 
-// DatasetsService builds datasets — generate rows from prompts or structured
-// specs.
+// DatasetsService manages datasets: kept tables of input rows and the output
+// columns an enrichment fills (ds_...).
 type DatasetsService struct {
 	client *Client
 }
 
-// Build builds a dataset from a prompt, a structured spec, or both. (operationId: buildDataset)
+// List returns the account's datasets, newest first (200 at most). (operationId: listDatasets)
+func (s *DatasetsService) List(ctx context.Context) ([]DatasetListItem, error) {
+	var response struct {
+		Datasets []DatasetListItem `json:"datasets"`
+	}
+	if err := s.client.request(ctx, http.MethodGet, "/datasets", nil, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Datasets, nil
+}
+
+// Create creates a dataset from inline Rows, from Prompt + Count (a paid list
+// build; set EstimateCost to price it — Dataset.CreditDetail carries the
+// estimate and nothing is created), or empty. Dataset.Run is set when a build
+// or fill started. (operationId: buildDataset)
+func (s *DatasetsService) Create(ctx context.Context, params CreateDatasetParams) (*Dataset, error) {
+	dataset := &Dataset{}
+	if err := s.client.request(ctx, http.MethodPost, "/datasets", nil, params, dataset); err != nil {
+		return nil, err
+	}
+	return dataset, nil
+}
+
+// Get returns the dataset's columns, row count, and recent runs. (operationId: getDataset)
+func (s *DatasetsService) Get(ctx context.Context, id string) (*Dataset, error) {
+	dataset := &Dataset{}
+	if err := s.client.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(id), nil, nil, dataset); err != nil {
+		return nil, err
+	}
+	return dataset, nil
+}
+
+// Update edits the dataset's name, index column, input and output columns, and
+// the bound enrichment's budget in one transaction. Refused with 409
+// dataset_in_use while a fill runs. (operationId: updateDataset)
+func (s *DatasetsService) Update(ctx context.Context, id string, params UpdateDatasetParams) (*Dataset, error) {
+	dataset := &Dataset{}
+	if err := s.client.request(ctx, http.MethodPatch, "/datasets/"+url.PathEscape(id), nil, params, dataset); err != nil {
+		return nil, err
+	}
+	return dataset, nil
+}
+
+// Delete deletes the dataset and its rows. Refused with 409 dataset_in_use
+// while a fill runs. (operationId: deleteDataset)
+func (s *DatasetsService) Delete(ctx context.Context, id string) error {
+	return s.client.request(ctx, http.MethodDelete, "/datasets/"+url.PathEscape(id), nil, nil, nil)
+}
+
+// ListRows returns a page of rows in position order. (operationId: listDatasetRows)
+func (s *DatasetsService) ListRows(ctx context.Context, id string, params *ListDatasetRowsParams) (*DatasetRowsPage, error) {
+	query := url.Values{}
+	cursor := 0
+	if params != nil {
+		if params.Limit > 0 {
+			query.Set("limit", strconv.Itoa(params.Limit))
+		}
+		if params.UpdatedSince != "" {
+			query.Set("updated_since", params.UpdatedSince)
+		}
+		cursor = params.Cursor
+	}
+	return s.client.fetchDatasetRowsPage(ctx, id, query, cursor)
+}
+
+// AddRows appends up to 100 rows keyed by input column name. Rows whose index
+// column value a held row already carries are skipped. (operationId: addDatasetRows)
+func (s *DatasetsService) AddRows(ctx context.Context, id string, rows []map[string]string) (*DatasetRowsAdded, error) {
+	body := map[string]any{"rows": rows}
+	added := &DatasetRowsAdded{}
+	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/rows", nil, body, added); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
+// DeleteRows deletes up to 100 rows by IDs and / or Positions. The other rows
+// keep their positions. (operationId: deleteDatasetRows)
+func (s *DatasetsService) DeleteRows(ctx context.Context, id string, params DeleteDatasetRowsParams) (*DatasetRowsDeleted, error) {
+	query := url.Values{}
+	if len(params.IDs) > 0 {
+		query.Set("ids", strings.Join(params.IDs, ","))
+	}
+	if len(params.Positions) > 0 {
+		query.Set("positions", joinInts(params.Positions))
+	}
+	deleted := &DatasetRowsDeleted{}
+	if err := s.client.request(ctx, http.MethodDelete, "/datasets/"+url.PathEscape(id)+"/rows", query, nil, deleted); err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
+// UpdateRow sets one row's input values and / or output cells by hand. rowID is
+// a row_... id or a 1-based position. (operationId: updateDatasetRow)
+func (s *DatasetsService) UpdateRow(ctx context.Context, id string, rowID string, params UpdateDatasetRowParams) (*DatasetRow, error) {
+	row := &DatasetRow{}
+	path := "/datasets/" + url.PathEscape(id) + "/rows/" + url.PathEscape(rowID)
+	if err := s.client.request(ctx, http.MethodPatch, path, nil, params, row); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// ImportRows appends the rows of a CSV whose headers are input and / or output
+// column names (output values land as manual cells). Big files are appended by
+// a job: Import.Status is "importing" and Datasets.Get reports
+// ImportInProgress until they land. (operationId: importDatasetRows)
+func (s *DatasetsService) ImportRows(ctx context.Context, id string, csv string) (*DatasetImportResult, error) {
+	body := &requestBody{content: []byte(csv), contentType: "text/csv"}
+	result := &DatasetImportResult{}
+	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/rows/import", nil, body, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// BuildRows generates Count more rows for the dataset (a paid list build; set
+// EstimateCost to price it). Dataset.Run is the build run. (operationId: buildDatasetRows)
+func (s *DatasetsService) BuildRows(ctx context.Context, id string, params BuildDatasetRowsParams) (*Dataset, error) {
+	dataset := &Dataset{}
+	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/rows/build", nil, params, dataset); err != nil {
+		return nil, err
+	}
+	return dataset, nil
+}
+
+// PromoteColumn turns an output column into an input column, every row's value
+// moving with it. (operationId: promoteDatasetColumn)
+func (s *DatasetsService) PromoteColumn(ctx context.Context, id string, column string) (*Dataset, error) {
+	body := map[string]string{"column": column}
+	dataset := &Dataset{}
+	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/columns/promote", nil, body, dataset); err != nil {
+		return nil, err
+	}
+	return dataset, nil
+}
+
+// Export returns the grid as a file: outputFormat "csv" (default when empty),
+// "xlsx" (an Excel workbook), or "jsonl" (one JSON object per row). (operationId: exportDataset)
+func (s *DatasetsService) Export(ctx context.Context, id string, outputFormat string) ([]byte, error) {
+	query := url.Values{}
+	if outputFormat != "" {
+		query.Set("output_format", outputFormat)
+	}
+	var content []byte
+	if err := s.client.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(id)+"/export", query, nil, &content); err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
+// Build is the legacy list build (MaxItems, Identifiers, ...). On an account on
+// Datasets the rows land in a Dataset named by the run's DatasetID. New work:
+// Datasets.Create. (operationId: buildDataset)
 func (s *DatasetsService) Build(ctx context.Context, params BuildDatasetParams) (*Run, error) {
 	run := &Run{}
 	if err := s.client.request(ctx, http.MethodPost, "/datasets", nil, params, run); err != nil {
@@ -76,13 +300,79 @@ func (s *DatasetsService) Build(ctx context.Context, params BuildDatasetParams) 
 	return run, nil
 }
 
-// Extend generates new deduplicated rows for a completed dataset build. (operationId: extendDataset)
+// Extend is the legacy way to generate more rows for a finished list build. On
+// a Dataset id prefer Datasets.BuildRows. (operationId: extendDataset)
 func (s *DatasetsService) Extend(ctx context.Context, id string, params ExtendDatasetParams) (*Run, error) {
 	run := &Run{}
 	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/extend", nil, params, run); err != nil {
 		return nil, err
 	}
 	return run, nil
+}
+
+// DatasetRowsPage is one page of dataset rows plus the cursor of the next.
+type DatasetRowsPage struct {
+	Rows []DatasetRow `json:"rows"`
+	// NextCursor is nil on the last page.
+	NextCursor *int `json:"next_cursor"`
+	RowCount   int  `json:"row_count"`
+
+	fetchPage func(ctx context.Context, cursor int) (*DatasetRowsPage, error)
+}
+
+// HasNextPage reports whether another page follows this one.
+func (p *DatasetRowsPage) HasNextPage() bool {
+	return p.NextCursor != nil
+}
+
+// NextPage fetches the following page, or ErrNoNextPage on the last one.
+func (p *DatasetRowsPage) NextPage(ctx context.Context) (*DatasetRowsPage, error) {
+	if !p.HasNextPage() {
+		return nil, ErrNoNextPage
+	}
+	return p.fetchPage(ctx, *p.NextCursor)
+}
+
+func (c *Client) fetchDatasetRowsPage(ctx context.Context, datasetID string, baseQuery url.Values, cursor int) (*DatasetRowsPage, error) {
+	query := url.Values{}
+	for key, values := range baseQuery {
+		query[key] = values
+	}
+	if cursor > 0 {
+		query.Set("cursor", strconv.Itoa(cursor))
+	}
+
+	page := &DatasetRowsPage{}
+	if err := c.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(datasetID)+"/rows", query, nil, page); err != nil {
+		return nil, err
+	}
+	page.fetchPage = func(ctx context.Context, nextCursor int) (*DatasetRowsPage, error) {
+		return c.fetchDatasetRowsPage(ctx, datasetID, baseQuery, nextCursor)
+	}
+	return page, nil
+}
+
+func joinInts(values []int) string {
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = strconv.Itoa(value)
+	}
+	return strings.Join(parts, ",")
+}
+
+// ToolsService reads the tool catalog.
+type ToolsService struct {
+	client *Client
+}
+
+// List returns every tool the row agent can use with its price, whether this
+// account may use it, its inputs, and the budget defaults. (operationId: listTools)
+func (s *ToolsService) List(ctx context.Context) (*ToolCatalog, error) {
+	catalog := &ToolCatalog{}
+	if err := s.client.request(ctx, http.MethodGet, "/tools", nil, nil, catalog); err != nil {
+		return nil, err
+	}
+	return catalog, nil
 }
 
 // ConfiguredDatasetsService runs reusable, pre-configured dataset templates

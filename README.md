@@ -79,12 +79,38 @@ for {
 }
 ```
 
+## Datasets
+
+A dataset is a kept table: input rows you add, output columns an enrichment fills.
+
+```go
+dataset, err := client.Datasets.Create(ctx, riveter.CreateDatasetParams{
+	Name:         "Wineries",
+	InputColumns: []string{"Winery URL"},
+	Rows:         []map[string]string{{"Winery URL": "ridgewine.com"}, {"Winery URL": "bonnydoonvineyard.com"}},
+})
+_, err = client.Datasets.Update(ctx, dataset.ID, riveter.UpdateDatasetParams{
+	Output: map[string]riveter.OutputColumnOperation{"Owner": {Prompt: "The winery's current owner"}},
+})
+fill, err := client.Enrich(ctx, riveter.EnrichParams{DatasetID: dataset.ID})
+_, err = client.Runs.WaitForResult(ctx, fill.ID, nil)
+page, err := client.Datasets.ListRows(ctx, dataset.ID, nil)
+for _, row := range page.Rows {
+	fmt.Println(*row.Input["Winery URL"], row.Cells["Owner"].Value)
+}
+csv, err := client.Datasets.Export(ctx, dataset.ID, "csv")
+```
+
+`Datasets.Create` with `Prompt` + `Count` generates the rows instead (paid; set
+`EstimateCost: true` first and read `CreditDetail`). `Datasets.ImportRows` appends a CSV.
+
 ## Surface
 
-- `client.Enrich`, `client.QuickSearch`, `client.Scrape`, `client.Account`
+- `client.Enrich`, `client.QuickSearch`, `client.SearchAgent`, `client.Scrape`, `client.Account`
 - `client.Runs` — `Get`, `Result`, `Stop`, `List`, `Summary`, `WaitForResult`
-- `client.Enrichments` — `List`, `Create`, `Get`, `Update`, `BuildDataset`
-- `client.Datasets` — `Build`, `Extend`
+- `client.Enrichments` — `List`, `Summary`, `Create`, `Get`, `Update`, `Delete`, `BuildDataset` (legacy)
+- `client.Datasets` — `List`, `Create`, `Get`, `Update`, `Delete`, `ListRows`, `AddRows`, `DeleteRows`, `UpdateRow`, `ImportRows`, `BuildRows`, `PromoteColumn`, `Export`; legacy `Build`, `Extend`
+- `client.Tools` — `List`
 - `client.ConfiguredDatasets` — `Build`
 - `client.Extractions` — `Create`, `Get`, `Run`
 - `client.Monitors` — `Create`, `List`, `Get`, `Update`, `Runs`
@@ -92,7 +118,8 @@ for {
 ## Errors and retries
 
 API failures return `*riveter.APIError` with `StatusCode`, `Type` (`not_found`,
-`insufficient_credits`, ...), `Message`, and optional `Details`; use `errors.As` to
+`insufficient_credits`, `feature_not_enabled`, ...; the known values are the
+`riveter.ErrorType*` constants), `Message`, and optional `Details`; use `errors.As` to
 inspect. Network failures return `*riveter.ConnectionError`. 429s are retried
 automatically using the `X-RateLimit-Reset` header; 5xx and network failures are retried
 for GETs. Configure with `WithMaxRetries` and `WithHTTPClient` (keep its `Timeout` above

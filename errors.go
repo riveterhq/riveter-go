@@ -7,9 +7,33 @@ import (
 	"strings"
 )
 
+// The error Type values the API documents. ErrorTypeFeatureNotEnabled (403)
+// means the account has not migrated to Datasets: stop retrying and open
+// https://app.riveterhq.com/v2/datasets. The 409 trio (ErrorTypeDatasetInUse,
+// ErrorTypeEnrichmentInUse, ErrorTypeRowInUse) means a fill is running: wait or
+// stop it.
+const (
+	ErrorTypeBadRequest          = "bad_request"
+	ErrorTypeValidation          = "validation"
+	ErrorTypeNotFound            = "not_found"
+	ErrorTypeForbidden           = "forbidden"
+	ErrorTypeUnauthorized        = "unauthorized"
+	ErrorTypeFeatureNotEnabled   = "feature_not_enabled"
+	ErrorTypeDuplicateRunKey     = "duplicate_run_key"
+	ErrorTypeInsufficientCredits = "insufficient_credits"
+	ErrorTypeCreditCapExceeded   = "credit_cap_exceeded"
+	ErrorTypeNotImplemented      = "not_implemented"
+	ErrorTypeDatasetInUse        = "dataset_in_use"
+	ErrorTypeEnrichmentInUse     = "enrichment_in_use"
+	ErrorTypeRowInUse            = "row_in_use"
+	ErrorTypePayloadTooLarge     = "payload_too_large"
+	ErrorTypeRateLimited         = "rate_limited"
+)
+
 // APIError is a non-2xx HTTP response, normalized across both error body
 // dialects — the clean { "error": {...} } envelope and the legacy
-// { "request_status": "error" } shape (401s).
+// { "request_status": "error" } shape (401s). Type is one of the ErrorType
+// constants, or a type this SDK does not know yet.
 type APIError struct {
 	StatusCode int
 	Type       string

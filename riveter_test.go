@@ -357,13 +357,16 @@ func TestUpdateMonitorSendsEnabledFalse(t *testing.T) {
 func TestUnwrapsListEnvelopes(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/enrichments" {
-			fmt.Fprint(w, `{"enrichments":[{"id":"enr_1","name":"E"}]}`)
+			if r.URL.Query().Get("name") != "E" || r.URL.Query().Get("page") != "1" {
+				t.Errorf("enrichments query = %s", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `{"enrichments":[{"id":"enr_1","name":"E","input_columns":["Company"],"output_columns":["CEO"]}],"pagination":{"page":1,"per_page":25,"total_count":1,"total_pages":1}}`)
 			return
 		}
 		fmt.Fprint(w, `{"monitors":[{"id":"mon_1"}]}`)
 	})
 
-	enrichments, err := client.Enrichments.List(context.Background())
+	enrichmentsPage, err := client.Enrichments.List(context.Background(), &ListEnrichmentsParams{Name: "E"})
 	if err != nil {
 		t.Fatalf("Enrichments.List: %v", err)
 	}
@@ -371,8 +374,12 @@ func TestUnwrapsListEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Monitors.List: %v", err)
 	}
-	if len(enrichments) != 1 || enrichments[0].ID != "enr_1" {
+	enrichments := enrichmentsPage.Enrichments
+	if len(enrichments) != 1 || enrichments[0].ID != "enr_1" || enrichments[0].InputColumns[0] != "Company" {
 		t.Fatalf("enrichments = %+v", enrichments)
+	}
+	if enrichmentsPage.HasNextPage() {
+		t.Fatalf("expected a single page, got %+v", enrichmentsPage.Pagination)
 	}
 	if len(monitors) != 1 || monitors[0].ID != "mon_1" {
 		t.Fatalf("monitors = %+v", monitors)

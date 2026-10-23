@@ -21,7 +21,7 @@ import (
 const defaultBaseURL = "https://api.riveterhq.com/v1"
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Client talks to the Riveter API. Create one with NewClient.
 type Client struct {
@@ -36,6 +36,7 @@ type Client struct {
 	ConfiguredDatasets *ConfiguredDatasetsService
 	Extractions        *ExtractionsService
 	Monitors           *MonitorsService
+	Tools              *ToolsService
 }
 
 // Option configures a Client.
@@ -90,10 +91,15 @@ func NewClient(opts ...Option) (*Client, error) {
 	client.ConfiguredDatasets = &ConfiguredDatasetsService{client: client}
 	client.Extractions = &ExtractionsService{client: client}
 	client.Monitors = &MonitorsService{client: client}
+	client.Tools = &ToolsService{client: client}
 	return client, nil
 }
 
-// Enrich starts an enrichment run on rows of input data. (operationId: enrich)
+// Enrich starts an enrichment run on rows of input data. Rows come from Input
+// (inline) or DatasetID (a Dataset or a finished list build); column config from
+// EnrichmentID, Output, or Prompt + Attributes. On a Dataset, Columns / Rows /
+// Positions (or Targets) scope the fill and States names the cell states to
+// re-run (Force runs every cell). (operationId: enrich)
 func (c *Client) Enrich(ctx context.Context, params EnrichParams) (*Run, error) {
 	run := &Run{}
 	if err := c.request(ctx, http.MethodPost, "/enrich", nil, params, run); err != nil {
@@ -107,6 +113,16 @@ func (c *Client) Enrich(ctx context.Context, params EnrichParams) (*Run, error) 
 func (c *Client) QuickSearch(ctx context.Context, params QuickSearchParams) (*Run, error) {
 	run := &Run{}
 	if err := c.request(ctx, http.MethodPost, "/quick_search", nil, params, run); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+// SearchAgent asks one research question and long-polls up to params.Wait
+// seconds (default 50) for the answer in Output. (operationId: searchAgent)
+func (c *Client) SearchAgent(ctx context.Context, params SearchAgentParams) (*Run, error) {
+	run := &Run{}
+	if err := c.request(ctx, http.MethodPost, "/search_agent", nil, params, run); err != nil {
 		return nil, err
 	}
 	return run, nil
@@ -130,26 +146,31 @@ func (c *Client) Account(ctx context.Context) (*AccountInfo, error) {
 	return info, nil
 }
 
+// requestBody is a request body sent as-is under its own content type (CSV imports).
+type requestBody struct {
+	content     []byte
+	contentType string
+}
+
+// request JSON-encodes body (or sends a *requestBody as-is) and JSON-decodes the response
+// into out. Pass a *[]byte as out to keep the raw body (exports); a 204 or empty body
+// leaves out untouched.
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	endpoint := c.baseURL + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
 
-	var payload []byte
-	if body != nil {
-		var err error
-		payload, err = json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("riveter: encode request body: %w", err)
-		}
+	encoded, err := encodeRequestBody(body)
+	if err != nil {
+		return err
 	}
 
 	retryOnFailure := method == http.MethodGet
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
-		if payload != nil {
-			reader = bytes.NewReader(payload)
+		if encoded != nil {
+			reader = bytes.NewReader(encoded.content)
 		}
 		request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 		if err != nil {
@@ -157,8 +178,8 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		}
 		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 		request.Header.Set("User-Agent", "riveter-sdk-go/"+Version)
-		if payload != nil {
-			request.Header.Set("Content-Type", "application/json")
+		if encoded != nil {
+			request.Header.Set("Content-Type", encoded.contentType)
 		}
 
 		response, err := c.httpClient.Do(request)
@@ -177,13 +198,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		}
 
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
-			if out == nil || len(responseBody) == 0 {
-				return nil
-			}
-			if err := json.Unmarshal(responseBody, out); err != nil {
-				return fmt.Errorf("riveter: decode response: %w", err)
-			}
-			return nil
+			return decodeSuccessBody(responseBody, out)
 		}
 
 		if response.StatusCode == http.StatusTooManyRequests && attempt < c.maxRetries {
@@ -197,6 +212,34 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 
 		return newAPIError(response.StatusCode, responseBody)
 	}
+}
+
+func encodeRequestBody(body any) (*requestBody, error) {
+	switch typed := body.(type) {
+	case nil:
+		return nil, nil
+	case *requestBody:
+		return typed, nil
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("riveter: encode request body: %w", err)
+	}
+	return &requestBody{content: payload, contentType: "application/json"}, nil
+}
+
+func decodeSuccessBody(responseBody []byte, out any) error {
+	if out == nil || len(responseBody) == 0 {
+		return nil
+	}
+	if raw, keepRaw := out.(*[]byte); keepRaw {
+		*raw = responseBody
+		return nil
+	}
+	if err := json.Unmarshal(responseBody, out); err != nil {
+		return fmt.Errorf("riveter: decode response: %w", err)
+	}
+	return nil
 }
 
 func backoffDelay(attempt int) time.Duration {

@@ -2,6 +2,7 @@ package riveter
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -21,20 +22,42 @@ type RunError struct {
 	Message string `json:"message"`
 }
 
+// CreditEstimate is the kickoff-time estimate. Maximum is the contract — a
+// run never charges more than it.
+type CreditEstimate struct {
+	Minimum        float64 `json:"minimum"`
+	Maximum        float64 `json:"maximum"`
+	ChargedUpfront bool    `json:"charged_upfront"`
+}
+
+// CreditDetail is the estimate next to what has been charged. CreditsRemaining
+// and SufficientCredits are set on estimates and credit errors only.
+type CreditDetail struct {
+	Estimate          *CreditEstimate `json:"estimate"`
+	CreditsUsed       float64         `json:"credits_used"`
+	CreditsRemaining  *float64        `json:"credits_remaining,omitempty"`
+	SufficientCredits *bool           `json:"sufficient_credits,omitempty"`
+}
+
 // Run is the uniform envelope returned by kickoffs and every /runs endpoint.
 // Endpoint-specific kickoff extras (DatasetID, CreditsCharged, ...) are only
 // set where the endpoint returns them; Output is nil until the run finishes.
+// An EstimateCost kickoff returns this shape with EstimateCost set, no ID, and the priced
+// CreditDetail.
 type Run struct {
 	ID             string          `json:"id"`
 	Type           string          `json:"type"`
 	Status         string          `json:"status"`
 	Progress       *RunProgress    `json:"progress"`
 	CreditsUsed    float64         `json:"credits_used"`
+	CreditDetail   *CreditDetail   `json:"credit_detail"`
+	EstimateCost   bool            `json:"estimate_cost"`
 	AppURL         string          `json:"app_url"`
 	ResultURL      string          `json:"result_url"`
 	StartedAt      *time.Time      `json:"started_at"`
 	FinishedAt     *time.Time      `json:"finished_at"`
 	Error          *RunError       `json:"error"`
+	StoppedReason  string          `json:"stopped_reason"`
 	EnrichmentID   string          `json:"enrichment_id"`
 	EnrichmentName string          `json:"enrichment_name"`
 	DatasetID      string          `json:"dataset_id"`
@@ -68,6 +91,7 @@ type RunListItem struct {
 	RowCount       *int       `json:"row_count"`
 	CreditsUsed    float64    `json:"credits_used"`
 	Error          *RunError  `json:"error"`
+	StoppedReason  string     `json:"stopped_reason"`
 	CreatedAt      *time.Time `json:"created_at"`
 	StartedAt      *time.Time `json:"started_at"`
 	FinishedAt     *time.Time `json:"finished_at"`
@@ -94,8 +118,19 @@ type RunsSummary struct {
 	} `json:"counts"`
 }
 
+// DatasetFillTarget is one box of cells to fill on a dataset: the named
+// columns × the named rows (all when omitted). Positions are 1-based.
+type DatasetFillTarget struct {
+	Columns   []string `json:"columns,omitempty"`
+	Rows      []string `json:"rows,omitempty"`
+	Positions []int    `json:"positions,omitempty"`
+}
+
 // EnrichParams is the request body for Enrich. Provide rows via Input or
 // DatasetID, and column config via EnrichmentID, Output, or Prompt+Attributes.
+// On a Dataset, Columns / Rows / Positions (or Targets) scope the fill and
+// States names the cell states to re-run (pending, stale, and failed by
+// default; Force runs every cell).
 type EnrichParams struct {
 	EnrichmentID        string                        `json:"enrichment_id,omitempty"`
 	Output              map[string]OutputColumnConfig `json:"output,omitempty"`
@@ -103,9 +138,19 @@ type EnrichParams struct {
 	Attributes          []string                      `json:"attributes,omitempty"`
 	Input               map[string][]string           `json:"input,omitempty"`
 	DatasetID           string                        `json:"dataset_id,omitempty"`
+	Columns             []string                      `json:"columns,omitempty"`
+	Rows                []string                      `json:"rows,omitempty"`
+	Positions           []int                         `json:"positions,omitempty"`
+	Targets             []DatasetFillTarget           `json:"targets,omitempty"`
+	States              []string                      `json:"states,omitempty"`
+	Force               bool                          `json:"force,omitempty"`
 	RunKey              string                        `json:"run_key,omitempty"`
 	WebhookURL          string                        `json:"webhook_url,omitempty"`
 	AllowDuplicateInput bool                          `json:"allow_duplicate_input,omitempty"`
+	// EstimateCost prices the run without starting it; MaxCredits refuses a run
+	// whose estimated maximum exceeds it (422 credit_cap_exceeded).
+	EstimateCost bool     `json:"estimate_cost,omitempty"`
+	MaxCredits   *float64 `json:"max_credits,omitempty"`
 }
 
 // FormatDetails holds format-specific column options.
@@ -165,33 +210,186 @@ type ListRunsParams struct {
 	PerPage       int
 }
 
-// EnrichmentSummary is the list-endpoint shape of an enrichment.
+// ListEnrichmentsParams filters EnrichmentsService.List. Zero values are omitted.
+type ListEnrichmentsParams struct {
+	// Comma-separated: pending, enqueued, processing, success, stopped.
+	Status string
+	// Case-insensitive substring match on the enrichment name.
+	Name    string
+	Page    int
+	PerPage int // max 50
+}
+
+// EnrichmentsSummary is the all-time enrichment counts by status.
+type EnrichmentsSummary struct {
+	Counts struct {
+		Pending    int `json:"pending"`
+		Enqueued   int `json:"enqueued"`
+		Processing int `json:"processing"`
+		Success    int `json:"success"`
+		Stopped    int `json:"stopped"`
+	} `json:"counts"`
+}
+
+// EnrichmentSummary is the compact list-endpoint shape of an enrichment.
+// Column configuration is on EnrichmentsService.Get.
 type EnrichmentSummary struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Status  string         `json:"status"`
-	AppURL  string         `json:"app_url"`
-	Columns map[string]any `json:"columns"`
+	ID                   string     `json:"id"`
+	Name                 string     `json:"name"`
+	Status               string     `json:"status"`
+	AppURL               string     `json:"app_url"`
+	ColumnCount          int        `json:"column_count"`
+	InputColumns         []string   `json:"input_columns"`
+	OutputColumns        []string   `json:"output_columns"`
+	ColumnNamesTruncated bool       `json:"column_names_truncated"`
+	CreatedAt            *time.Time `json:"created_at"`
+	UpdatedAt            *time.Time `json:"updated_at"`
 }
 
-// Enrichment is an enrichment's structure: input columns and output config.
+// OutputColumnSpec is one output column of a dataset-engine enrichment. Tool
+// pins the column to one tool (a name from Tools.List): the row agent makes one
+// call of it per row and the call's result is the cell.
+type OutputColumnSpec struct {
+	Name string `json:"name"`
+	// Prompt is what to find for this column, on top of the enrichment's task prompt.
+	Prompt string `json:"prompt,omitempty"`
+	// OutputSchema is a JSON Schema for the cell value. Omitted, a plain-value
+	// type is inferred; {"type": "string"} keeps free text.
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	Tool         string         `json:"tool,omitempty"`
+}
+
+// Enrichment is an enrichment. A dataset-engine recipe (enr_... on an account
+// on Datasets) carries Prompt, InputColumns, Output as a list of OutputColumnSpec,
+// Tools, the budget fields, and Version; a legacy enrichment (a Project) carries
+// Status, AppURL, Input, and LegacyOutput keyed by column name. Output is a
+// json.RawMessage because the two shapes differ: decode it with OutputColumns
+// or LegacyOutput. DatasetID / AppURL are set on Enrichments.Create.
 type Enrichment struct {
-	ID        string                        `json:"id"`
-	Name      string                        `json:"name"`
-	Status    string                        `json:"status"`
-	AppURL    string                        `json:"app_url"`
-	DatasetID string                        `json:"dataset_id"`
-	Input     map[string]any                `json:"input"`
-	Output    map[string]OutputColumnConfig `json:"output"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Prompt       string          `json:"prompt"`
+	InputColumns []string        `json:"input_columns"`
+	Output       json.RawMessage `json:"output"`
+	Tools        []string        `json:"tools"`
+	// BudgetCreditsPerRow is the most the row agent may spend on one row. It moves
+	// by 1.5 per output column added or removed unless BudgetLocked.
+	BudgetCreditsPerRow float64 `json:"budget_credits_per_row"`
+	BudgetLocked        bool    `json:"budget_locked"`
+	// Version goes up by one on every column change; a cell filled under an
+	// older version reads stale.
+	Version   int            `json:"version"`
+	CreatedAt *time.Time     `json:"created_at"`
+	UpdatedAt *time.Time     `json:"updated_at"`
+	Status    string         `json:"status"`
+	AppURL    string         `json:"app_url"`
+	DatasetID string         `json:"dataset_id"`
+	Input     map[string]any `json:"input"`
 }
 
-// UpdateEnrichmentParams is the request body for Enrichments.Update.
+// OutputColumns decodes Output as a dataset-engine recipe's column list. It
+// returns nil, nil when Output is empty or not a list.
+func (e *Enrichment) OutputColumns() ([]OutputColumnSpec, error) {
+	if len(e.Output) == 0 || e.Output[0] != '[' {
+		return nil, nil
+	}
+	var columns []OutputColumnSpec
+	if err := json.Unmarshal(e.Output, &columns); err != nil {
+		return nil, fmt.Errorf("riveter: decode enrichment output: %w", err)
+	}
+	return columns, nil
+}
+
+// LegacyOutput decodes Output as a legacy enrichment's per-column config. It
+// returns nil, nil when Output is empty or not an object.
+func (e *Enrichment) LegacyOutput() (map[string]OutputColumnConfig, error) {
+	if len(e.Output) == 0 || e.Output[0] != '{' {
+		return nil, nil
+	}
+	var columns map[string]OutputColumnConfig
+	if err := json.Unmarshal(e.Output, &columns); err != nil {
+		return nil, fmt.Errorf("riveter: decode enrichment output: %w", err)
+	}
+	return columns, nil
+}
+
+// CreateEnrichmentParams is the request body for Enrichments.Create. Prompt +
+// Output save a recipe (an empty Dataset bound to it comes back as DatasetID on
+// the response); DatasetID alone takes the enrichment of a Dataset or one shaped
+// from a finished legacy list build. Output entries are OutputColumnSpec values
+// or plain column-name strings.
+type CreateEnrichmentParams struct {
+	DatasetID       string   `json:"dataset_id,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Prompt          string   `json:"prompt,omitempty"`
+	InputColumns    []string `json:"input_columns,omitempty"`
+	Output          []any    `json:"output,omitempty"`
+	Budget          *float64 `json:"budget,omitempty"`
+	BudgetLocked    *bool    `json:"budget_locked,omitempty"`
+	OnlyTools       []string `json:"only_tools,omitempty"`
+	AdditionalTools []string `json:"additional_tools,omitempty"`
+}
+
+// OutputColumnOperation is one output column operation of UpdateEnrichmentParams
+// / UpdateDatasetParams, keyed by column name: add or edit (Prompt /
+// OutputSchema / Tool), Rename, or Delete. UnpinTool sends tool: null, which
+// unpins the column's tool.
+type OutputColumnOperation struct {
+	Prompt       string         `json:"prompt,omitempty"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	Tool         string         `json:"tool,omitempty"`
+	UnpinTool    bool           `json:"-"`
+	Rename       string         `json:"rename,omitempty"`
+	Delete       bool           `json:"delete,omitempty"`
+}
+
+// MarshalJSON writes "tool": null when UnpinTool is set.
+func (op OutputColumnOperation) MarshalJSON() ([]byte, error) {
+	type plain OutputColumnOperation
+	if !op.UnpinTool {
+		return json.Marshal(plain(op))
+	}
+	// The outer Tool shadows the embedded one, so a nil pointer writes null.
+	wire := struct {
+		plain
+		Tool *string `json:"tool"`
+	}{plain: plain(op)}
+	return json.Marshal(wire)
+}
+
+// UpdateEnrichmentParams is the request body for Enrichments.Update. On a
+// dataset-engine enrichment: Name, Prompt, InputColumns, Budget, BudgetLocked,
+// the tool lists, and Output operations. On a legacy enrichment: LegacyOutput
+// keyed by column name plus ColumnOrder.
 type UpdateEnrichmentParams struct {
-	Output      map[string]OutputColumnConfig `json:"output,omitempty"`
-	ColumnOrder []string                      `json:"column_order,omitempty"`
+	Name            string                           `json:"name,omitempty"`
+	Prompt          string                           `json:"prompt,omitempty"`
+	InputColumns    []string                         `json:"input_columns,omitempty"`
+	Budget          *float64                         `json:"budget,omitempty"`
+	BudgetLocked    *bool                            `json:"budget_locked,omitempty"`
+	OnlyTools       []string                         `json:"only_tools,omitempty"`
+	AdditionalTools []string                         `json:"additional_tools,omitempty"`
+	Output          map[string]OutputColumnOperation `json:"-"`
+	LegacyOutput    map[string]OutputColumnConfig    `json:"-"`
+	ColumnOrder     []string                         `json:"column_order,omitempty"`
 }
 
-// BuildDatasetForEnrichmentParams is the body for Enrichments.BuildDataset.
+// MarshalJSON writes whichever of Output / LegacyOutput is set under "output".
+func (p UpdateEnrichmentParams) MarshalJSON() ([]byte, error) {
+	type plain UpdateEnrichmentParams
+	wire := struct {
+		plain
+		Output any `json:"output,omitempty"`
+	}{plain: plain(p)}
+	if p.Output != nil {
+		wire.Output = p.Output
+	} else if p.LegacyOutput != nil {
+		wire.Output = p.LegacyOutput
+	}
+	return json.Marshal(wire)
+}
+
+// BuildDatasetForEnrichmentParams is the body for Enrichments.BuildDataset (legacy).
 type BuildDatasetForEnrichmentParams struct {
 	Prompt                      string   `json:"prompt"`
 	Qualifiers                  []string `json:"qualifiers,omitempty"`
@@ -199,9 +397,222 @@ type BuildDatasetForEnrichmentParams struct {
 	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
 	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
 	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
+	EstimateCost                bool     `json:"estimate_cost,omitempty"`
+	MaxCredits                  *float64 `json:"max_credits,omitempty"`
 }
 
-// BuildDatasetParams is the request body for Datasets.Build.
+// DatasetCell is one cell. State is pending / running / ok / not_found /
+// failed / manual / stale; Reason and Error are set on failed cells only.
+type DatasetCell struct {
+	Value   any      `json:"value"`
+	State   string   `json:"state"`
+	Reason  string   `json:"reason,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Sources []string `json:"sources"`
+}
+
+// DatasetRow is a dataset row: Input by input column name, Cells by output
+// column name. Position is 1-based; Credits is the row's charge across its runs.
+type DatasetRow struct {
+	ID             string                 `json:"id"`
+	Position       int                    `json:"position"`
+	Input          map[string]*string     `json:"input"`
+	Cells          map[string]DatasetCell `json:"cells"`
+	Credits        float64                `json:"credits"`
+	NotFoundReason string                 `json:"not_found_reason"`
+	CreatedAt      *time.Time             `json:"created_at"`
+	UpdatedAt      *time.Time             `json:"updated_at"`
+}
+
+// DatasetRunSummary is a run on a dataset as the dataset lists it. Type is
+// dataset_build (list generation) or enrichment (a fill).
+type DatasetRunSummary struct {
+	ID         string     `json:"id"`
+	Type       string     `json:"type"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+}
+
+// Dataset is a dataset on the dataset engine (ds_...). Run is set on
+// Datasets.Create / Datasets.BuildRows when a build or fill started; the column
+// configuration is on Enrichments.Get(EnrichmentID). EstimateCost and
+// CreditDetail are set on an EstimateCost call.
+type Dataset struct {
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	InputColumns     []string            `json:"input_columns"`
+	IndexColumn      string              `json:"index_column"`
+	EnrichmentID     string              `json:"enrichment_id"`
+	OutputColumns    []string            `json:"output_columns"`
+	RowCount         int                 `json:"row_count"`
+	RowsExpired      bool                `json:"rows_expired"`
+	ImportInProgress bool                `json:"import_in_progress"`
+	Runs             []DatasetRunSummary `json:"runs"`
+	Run              *Run                `json:"run"`
+	EstimateCost     bool                `json:"estimate_cost"`
+	CreditDetail     *CreditDetail       `json:"credit_detail"`
+	CreatedAt        *time.Time          `json:"created_at"`
+	UpdatedAt        *time.Time          `json:"updated_at"`
+}
+
+// DatasetListItem is the compact list-endpoint shape of a dataset.
+type DatasetListItem struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	InputColumnCount  int                `json:"input_column_count"`
+	OutputColumnCount int                `json:"output_column_count"`
+	RowCount          int                `json:"row_count"`
+	RowsExpired       bool               `json:"rows_expired"`
+	NewestRun         *DatasetRunSummary `json:"newest_run"`
+	CreatedAt         *time.Time         `json:"created_at"`
+	UpdatedAt         *time.Time         `json:"updated_at"`
+}
+
+// CreateDatasetParams is the request body for Datasets.Create: rows sent inline
+// (Rows, ≤ 100 per call; more through AddRows / ImportRows), generated from
+// Prompt + Count (a paid list build; EstimateCost prices it), or empty (Name /
+// InputColumns alone). EnrichmentID binds a saved recipe; AutoFill starts the
+// fill once the rows land.
+type CreateDatasetParams struct {
+	Name           string              `json:"name,omitempty"`
+	InputColumns   []string            `json:"input_columns,omitempty"`
+	Rows           []map[string]string `json:"rows,omitempty"`
+	Prompt         string              `json:"prompt,omitempty"`
+	Count          int                 `json:"count,omitempty"`
+	EnrichmentID   string              `json:"enrichment_id,omitempty"`
+	Attributes     []string            `json:"attributes,omitempty"`
+	AutoFill       bool                `json:"auto_fill,omitempty"`
+	WebhookURL     string              `json:"webhook_url,omitempty"`
+	FillWebhookURL string              `json:"fill_webhook_url,omitempty"`
+	EstimateCost   bool                `json:"estimate_cost,omitempty"`
+	MaxCredits     *float64            `json:"max_credits,omitempty"`
+}
+
+// InputColumnOperation is one input column operation of UpdateDatasetParams,
+// keyed by column name: add (the zero value), Rename, or Delete.
+type InputColumnOperation struct {
+	Rename string `json:"rename,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
+}
+
+// UpdateDatasetParams is the request body for Datasets.Update: Name,
+// IndexColumn, InputColumns and Output column operations by name, and the
+// bound enrichment's Budget / BudgetLocked, in one transaction.
+type UpdateDatasetParams struct {
+	Name         string                           `json:"name,omitempty"`
+	IndexColumn  string                           `json:"index_column,omitempty"`
+	InputColumns map[string]InputColumnOperation  `json:"input_columns,omitempty"`
+	Output       map[string]OutputColumnOperation `json:"output,omitempty"`
+	Budget       *float64                         `json:"budget,omitempty"`
+	BudgetLocked *bool                            `json:"budget_locked,omitempty"`
+}
+
+// ListDatasetRowsParams filters Datasets.ListRows. Zero values are omitted.
+type ListDatasetRowsParams struct {
+	// Limit is 1–1000 (default 100).
+	Limit int
+	// Cursor is the previous page's NextCursor.
+	Cursor int
+	// UpdatedSince (ISO 8601) returns only rows changed since then.
+	UpdatedSince string
+}
+
+// DatasetRowsAdded is the Datasets.AddRows response.
+type DatasetRowsAdded struct {
+	Rows              []DatasetRow `json:"rows"`
+	SkippedDuplicates int          `json:"skipped_duplicates"`
+	RowCount          int          `json:"row_count"`
+}
+
+// DeleteDatasetRowsParams names up to 100 rows by IDs (row_...) and / or
+// 1-based Positions.
+type DeleteDatasetRowsParams struct {
+	IDs       []string
+	Positions []int
+}
+
+// DatasetRowsDeleted is the Datasets.DeleteRows response.
+type DatasetRowsDeleted struct {
+	Deleted  int `json:"deleted"`
+	RowCount int `json:"row_count"`
+}
+
+// UpdateDatasetRowParams is the request body for Datasets.UpdateRow. Input sets
+// input values by input column name (a nil pointer removes one; refused with 409
+// row_in_use while the row runs). Cells sets output cells by output column name
+// as manual cells (nil clears one; skipped by a fill unless Force).
+type UpdateDatasetRowParams struct {
+	Input map[string]*string `json:"input,omitempty"`
+	Cells map[string]any     `json:"cells,omitempty"`
+}
+
+// DatasetImportResult is the Datasets.ImportRows response. Import.Status is
+// "done" when the rows landed in the call, "importing" when a job is appending
+// them (Datasets.Get reports ImportInProgress until it does).
+type DatasetImportResult struct {
+	Import struct {
+		Status            string `json:"status"`
+		Rows              int    `json:"rows"`
+		RowsAdded         int    `json:"rows_added"`
+		SkippedDuplicates int    `json:"skipped_duplicates"`
+	} `json:"import"`
+	RowCount int `json:"row_count"`
+}
+
+// BuildDatasetRowsParams is the request body for Datasets.BuildRows: generate
+// Count more rows (a paid list build); AutoFill fills them once they land.
+type BuildDatasetRowsParams struct {
+	Prompt         string   `json:"prompt,omitempty"`
+	Count          int      `json:"count"`
+	AutoFill       bool     `json:"auto_fill,omitempty"`
+	WebhookURL     string   `json:"webhook_url,omitempty"`
+	FillWebhookURL string   `json:"fill_webhook_url,omitempty"`
+	EstimateCost   bool     `json:"estimate_cost,omitempty"`
+	MaxCredits     *float64 `json:"max_credits,omitempty"`
+}
+
+// ToolInput is one input of a tool in the catalog. Type is nil when the input
+// takes more than one shape.
+type ToolInput struct {
+	Name        string  `json:"name"`
+	Type        *string `json:"type"`
+	Required    bool    `json:"required"`
+	Description *string `json:"description"`
+}
+
+// ToolCatalogEntry is one tool of Tools.List.
+type ToolCatalogEntry struct {
+	Name           string      `json:"name"`
+	Description    string      `json:"description"`
+	CreditsPerCall float64     `json:"credits_per_call"`
+	PriceNote      string      `json:"price_note"`
+	Default        bool        `json:"default"`
+	RequiresOptIn  bool        `json:"requires_opt_in"`
+	Enabled        bool        `json:"enabled"`
+	RequiresAPIKey bool        `json:"requires_api_key"`
+	APIKeyLinked   *bool       `json:"api_key_linked"`
+	Companions     []string    `json:"companions"`
+	Inputs         []ToolInput `json:"inputs"`
+	InputGroups    [][]string  `json:"input_groups"`
+	Returns        string      `json:"returns"`
+}
+
+// ToolCatalog is the Tools.List response: every tool with its price, whether
+// this account may use it, and the budget defaults.
+type ToolCatalog struct {
+	Tools  []ToolCatalogEntry `json:"tools"`
+	Budget struct {
+		// DefaultCreditsPerOutputColumn times the output columns is a new enrichment's budget per row.
+		DefaultCreditsPerOutputColumn float64 `json:"default_credits_per_output_column"`
+		MinCreditsPerRow              float64 `json:"min_credits_per_row"`
+		MaxCreditsPerRow              float64 `json:"max_credits_per_row"`
+	} `json:"budget"`
+}
+
+// BuildDatasetParams is the legacy list-build body of Datasets.Build (MaxItems,
+// Identifiers, ...). On an account on Datasets the rows land in a Dataset named
+// by the run's DatasetID. New work: Datasets.Create.
 type BuildDatasetParams struct {
 	Prompt                      string   `json:"prompt,omitempty"`
 	Identifiers                 []string `json:"identifiers,omitempty"`
@@ -211,6 +622,8 @@ type BuildDatasetParams struct {
 	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
 	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
 	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
+	EstimateCost                bool     `json:"estimate_cost,omitempty"`
+	MaxCredits                  *float64 `json:"max_credits,omitempty"`
 }
 
 // ExtendDatasetParams is the request body for Datasets.Extend.
@@ -221,6 +634,8 @@ type ExtendDatasetParams struct {
 	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
 	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
 	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
+	EstimateCost                bool     `json:"estimate_cost,omitempty"`
+	MaxCredits                  *float64 `json:"max_credits,omitempty"`
 }
 
 // BuildConfiguredDatasetParams is the body for ConfiguredDatasets.Build.
@@ -228,6 +643,8 @@ type BuildConfiguredDatasetParams struct {
 	Parameters        map[string]string `json:"parameters,omitempty"`
 	Tier              string            `json:"tier,omitempty"`
 	DatasetWebhookURL string            `json:"dataset_webhook_url,omitempty"`
+	EstimateCost      bool              `json:"estimate_cost,omitempty"`
+	MaxCredits        *float64          `json:"max_credits,omitempty"`
 }
 
 // CreateExtractionParams is the request body for Extractions.Create.
@@ -237,6 +654,8 @@ type CreateExtractionParams struct {
 	OutputRecordJSONSchema map[string]any `json:"output_record_json_schema"`
 	Name                   string         `json:"name,omitempty"`
 	RequiredKeys           []string       `json:"required_keys,omitempty"`
+	EstimateCost           bool           `json:"estimate_cost,omitempty"`
+	MaxCredits             *float64       `json:"max_credits,omitempty"`
 }
 
 // Extraction is a reusable site scrape/extract recipe.
@@ -254,16 +673,23 @@ type Extraction struct {
 	DiscoveredAt           *time.Time `json:"discovered_at"`
 	RunCreditsRequired     float64    `json:"run_credits_required"`
 	CreditsCharged         float64    `json:"credits_charged"`
+	// Set on the Extractions.Create response (and on an EstimateCost call of it).
+	CreditDetail *CreditDetail `json:"credit_detail"`
+	EstimateCost bool          `json:"estimate_cost"`
 }
 
 // RunExtractionParams is the request body for Extractions.Run.
 type RunExtractionParams struct {
-	Variables  map[string]string `json:"variables,omitempty"`
-	WebhookURL string            `json:"webhook_url,omitempty"`
+	Variables    map[string]string `json:"variables,omitempty"`
+	WebhookURL   string            `json:"webhook_url,omitempty"`
+	EstimateCost bool              `json:"estimate_cost,omitempty"`
+	MaxCredits   *float64          `json:"max_credits,omitempty"`
 }
 
 // CreateMonitorParams is the request body for Monitors.Create. Minute and
-// Hour are always sent (0 is valid for both).
+// Hour are always sent (0 is valid for both). Creation is free; EstimateCost prices
+// ONE scheduled run over Input and MaxCredits refuses the monitor when that
+// estimate is higher.
 type CreateMonitorParams struct {
 	EnrichmentID   string              `json:"enrichment_id"`
 	Cadence        string              `json:"cadence"`
@@ -277,6 +703,8 @@ type CreateMonitorParams struct {
 	OutputFormat   string              `json:"output_format,omitempty"`
 	RunImmediately bool                `json:"run_immediately,omitempty"`
 	Input          map[string][]string `json:"input,omitempty"`
+	EstimateCost   bool                `json:"estimate_cost,omitempty"`
+	MaxCredits     *float64            `json:"max_credits,omitempty"`
 }
 
 // UpdateMonitorParams is the request body for Monitors.Update. Enabled is a
@@ -306,6 +734,9 @@ type Monitor struct {
 	EnrichmentName  string     `json:"enrichment_name"`
 	CreatedAt       *time.Time `json:"created_at"`
 	HasInput        bool       `json:"has_input"`
+	// Set on an EstimateCost call of Monitors.Create: the estimate for one scheduled run.
+	CreditDetail *CreditDetail `json:"credit_detail"`
+	EstimateCost bool          `json:"estimate_cost"`
 }
 
 // ListMonitorRunsParams filters GET /monitors/{id}/runs.
@@ -317,30 +748,47 @@ type ListMonitorRunsParams struct {
 
 // QuickSearchParams is the request body for QuickSearch.
 type QuickSearchParams struct {
-	Query     string `json:"query"`
-	DateStart string `json:"date_start,omitempty"`
-	DateEnd   string `json:"date_end,omitempty"`
-	RunKey    string `json:"run_key,omitempty"`
+	Query        string   `json:"query"`
+	DateStart    string   `json:"date_start,omitempty"`
+	DateEnd      string   `json:"date_end,omitempty"`
+	RunKey       string   `json:"run_key,omitempty"`
+	EstimateCost bool     `json:"estimate_cost,omitempty"`
+	MaxCredits   *float64 `json:"max_credits,omitempty"`
+}
+
+// SearchAgentParams is the request body for SearchAgent. Wait is the
+// long-poll budget in seconds (0–50; nil means the server default of 50).
+type SearchAgentParams struct {
+	Prompt       string         `json:"prompt"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	Wait         *int           `json:"wait,omitempty"`
+	RunKey       string         `json:"run_key,omitempty"`
+	EstimateCost bool           `json:"estimate_cost,omitempty"`
+	MaxCredits   *float64       `json:"max_credits,omitempty"`
 }
 
 // ScrapeParams is the request body for Scrape.
 type ScrapeParams struct {
-	URL              string `json:"url"`
-	ProxyCountryCode string `json:"proxy_country_code,omitempty"`
-	SkipCache        bool   `json:"skip_cache,omitempty"`
+	URL              string   `json:"url"`
+	ProxyCountryCode string   `json:"proxy_country_code,omitempty"`
+	SkipCache        bool     `json:"skip_cache,omitempty"`
+	EstimateCost     bool     `json:"estimate_cost,omitempty"`
+	MaxCredits       *float64 `json:"max_credits,omitempty"`
 }
 
 // ScrapeResult is the synchronous scrape result (legacy request_status
 // format, per the spec).
 type ScrapeResult struct {
-	RequestStatus   string  `json:"request_status"`
-	Text            string  `json:"text"`
-	URL             string  `json:"url"`
-	BaseURLForLinks string  `json:"base_url_for_links"`
-	StatusCode      int     `json:"status_code"`
-	PossiblyBlocked bool    `json:"possibly_blocked"`
-	CreditUsed      float64 `json:"credit_used"`
-	RiveterAppLink  string  `json:"riveter_app_link"`
+	RequestStatus   string        `json:"request_status"`
+	Text            string        `json:"text"`
+	URL             string        `json:"url"`
+	BaseURLForLinks string        `json:"base_url_for_links"`
+	StatusCode      int           `json:"status_code"`
+	PossiblyBlocked bool          `json:"possibly_blocked"`
+	CreditUsed      float64       `json:"credit_used"`
+	CreditDetail    *CreditDetail `json:"credit_detail"`
+	EstimateCost    bool          `json:"estimate_cost"`
+	RiveterAppLink  string        `json:"riveter_app_link"`
 }
 
 // Credit is the account's credit state.
