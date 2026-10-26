@@ -21,7 +21,7 @@ import (
 const defaultBaseURL = "https://api.riveterhq.com/v1"
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "0.2.0"
+const Version = "1.0.0"
 
 // Client talks to the Riveter API. Create one with NewClient.
 type Client struct {
@@ -96,7 +96,7 @@ func NewClient(opts ...Option) (*Client, error) {
 }
 
 // Enrich starts an enrichment run on rows of input data. Rows come from Input
-// (inline) or DatasetID (a Dataset or a finished list build); column config from
+// (inline) or DatasetID (a Dataset); column config from
 // EnrichmentID, Output, or Prompt + Attributes. On a Dataset, Columns / Rows /
 // Positions (or Targets) scope the fill and States names the cell states to
 // re-run (Force runs every cell). (operationId: enrich)

@@ -39,11 +39,21 @@ type CreditDetail struct {
 	SufficientCredits *bool           `json:"sufficient_credits,omitempty"`
 }
 
+// LegacyNotice is set on a response when the request took a legacy mode (a
+// legacy enrichment's id, a monitor on one, legacy-pipeline column fields):
+// what to send instead. The response also carries the Deprecation: true header.
+type LegacyNotice struct {
+	Notice string `json:"notice"`
+	// Successor is "METHOD /v1/path" of the successor.
+	Successor string `json:"successor"`
+	Docs      string `json:"docs"`
+}
+
 // Run is the uniform envelope returned by kickoffs and every /runs endpoint.
 // Endpoint-specific kickoff extras (DatasetID, CreditsCharged, ...) are only
 // set where the endpoint returns them; Output is nil until the run finishes.
 // An EstimateCost kickoff returns this shape with EstimateCost set, no ID, and the priced
-// CreditDetail.
+// CreditDetail. Legacy is set when the kickoff took a legacy mode.
 type Run struct {
 	ID             string          `json:"id"`
 	Type           string          `json:"type"`
@@ -65,10 +75,9 @@ type Run struct {
 	MonitorID      string          `json:"monitor_id"`
 	WebhookURL     string          `json:"webhook_url"`
 	Output         json.RawMessage `json:"output"`
+	Legacy         *LegacyNotice   `json:"legacy"`
 
 	MaxItems            int            `json:"max_items"`
-	EnrichmentRunID     string         `json:"enrichment_run_id"`
-	SourceDatasetID     string         `json:"source_dataset_id"`
 	ConfiguredDatasetID string         `json:"configured_dataset_id"`
 	CreditsCharged      float64        `json:"credits_charged"`
 	Variables           map[string]any `json:"variables"`
@@ -127,7 +136,7 @@ type DatasetFillTarget struct {
 }
 
 // EnrichParams is the request body for Enrich. Provide rows via Input or
-// DatasetID, and column config via EnrichmentID, Output, or Prompt+Attributes.
+// DatasetID (a Dataset), and column config via EnrichmentID, Output, or Prompt+Attributes.
 // On a Dataset, Columns / Rows / Positions (or Targets) scope the fill and
 // States names the cell states to re-run (pending, stale, and failed by
 // default; Force runs every cell).
@@ -174,17 +183,25 @@ type RunWhenConfig struct {
 	Rules     []RunWhenRule `json:"rules,omitempty"`
 }
 
-// OutputColumnConfig is the per-column enrichment config (agent mode or
-// tool-only mode).
+// OutputColumnConfig is one output column of an inline Enrich: Prompt, an
+// optional OutputSchema, an optional pinned Tool (Contexts is accepted and
+// ignored). Every other field is the legacy pipeline's: a column that sets one
+// keeps the run on the legacy pipeline and the response carries Legacy.
 type OutputColumnConfig struct {
-	Prompt           string            `json:"prompt,omitempty"`
-	Contexts         []string          `json:"contexts,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	// OutputSchema is a JSON Schema for the cell value. Omitted, a plain-value type is inferred.
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	// Tool is a name from Tools.List: one call of it per row is the cell. With the
+	// tool parameters below it is the legacy tool-only column.
+	Tool     string   `json:"tool,omitempty"`
+	Contexts []string `json:"contexts,omitempty"`
+	// Legacy pipeline fields.
 	Tools            []string          `json:"tools,omitempty"`
+	MaxToolCalls     int               `json:"max_tool_calls,omitempty"`
 	Format           string            `json:"format,omitempty"`
 	FormatDetails    *FormatDetails    `json:"format_details,omitempty"`
 	RunWhen          string            `json:"run_when,omitempty"`
 	RunWhenConfig    *RunWhenConfig    `json:"run_when_config,omitempty"`
-	Tool             string            `json:"tool,omitempty"`
 	URL              string            `json:"url,omitempty"`
 	Query            string            `json:"query,omitempty"`
 	DateStart        string            `json:"date_start,omitempty"`
@@ -194,7 +211,6 @@ type OutputColumnConfig struct {
 	ProxyCountryCode string            `json:"proxy_country_code,omitempty"`
 	WaitLonger       bool              `json:"wait_longer,omitempty"`
 	SkipCache        bool              `json:"skip_cache,omitempty"`
-	Delete           bool              `json:"delete,omitempty"`
 }
 
 // ListRunsParams filters GET /runs.
@@ -203,6 +219,7 @@ type ListRunsParams struct {
 	Type          string
 	Status        string
 	EnrichmentID  string
+	DatasetID     string
 	MonitorID     string
 	CreatedAfter  string
 	CreatedBefore string
@@ -220,24 +237,15 @@ type ListEnrichmentsParams struct {
 	PerPage int // max 50
 }
 
-// EnrichmentsSummary is the all-time enrichment counts by status.
-type EnrichmentsSummary struct {
-	Counts struct {
-		Pending    int `json:"pending"`
-		Enqueued   int `json:"enqueued"`
-		Processing int `json:"processing"`
-		Success    int `json:"success"`
-		Stopped    int `json:"stopped"`
-	} `json:"counts"`
-}
-
 // EnrichmentSummary is the compact list-endpoint shape of an enrichment.
-// Column configuration is on EnrichmentsService.Get.
+// Column configuration is on EnrichmentsService.Get. Status, AppURL, and
+// DatasetID (the dataset copy to fill instead) are set on legacy enrichments only.
 type EnrichmentSummary struct {
 	ID                   string     `json:"id"`
 	Name                 string     `json:"name"`
 	Status               string     `json:"status"`
 	AppURL               string     `json:"app_url"`
+	DatasetID            string     `json:"dataset_id"`
 	ColumnCount          int        `json:"column_count"`
 	InputColumns         []string   `json:"input_columns"`
 	OutputColumns        []string   `json:"output_columns"`
@@ -259,12 +267,11 @@ type OutputColumnSpec struct {
 	Tool         string         `json:"tool,omitempty"`
 }
 
-// Enrichment is an enrichment. A dataset-engine recipe (enr_... on an account
-// on Datasets) carries Prompt, InputColumns, Output as a list of OutputColumnSpec,
-// Tools, the budget fields, and Version; a legacy enrichment (a Project) carries
-// Status, AppURL, Input, and LegacyOutput keyed by column name. Output is a
-// json.RawMessage because the two shapes differ: decode it with OutputColumns
-// or LegacyOutput. DatasetID / AppURL are set on Enrichments.Create.
+// Enrichment is an enrichment: Prompt, InputColumns, Output as a list of
+// OutputColumnSpec, Tools, the budget fields, and Version. DatasetID / AppURL
+// are set on Enrichments.Create. A legacy enrichment's id answers its older
+// shape (the legacy API docs) with Legacy set; Output is a json.RawMessage so
+// that shape still decodes, and OutputColumns reads the current one.
 type Enrichment struct {
 	ID           string          `json:"id"`
 	Name         string          `json:"name"`
@@ -278,17 +285,16 @@ type Enrichment struct {
 	BudgetLocked        bool    `json:"budget_locked"`
 	// Version goes up by one on every column change; a cell filled under an
 	// older version reads stale.
-	Version   int            `json:"version"`
-	CreatedAt *time.Time     `json:"created_at"`
-	UpdatedAt *time.Time     `json:"updated_at"`
-	Status    string         `json:"status"`
-	AppURL    string         `json:"app_url"`
-	DatasetID string         `json:"dataset_id"`
-	Input     map[string]any `json:"input"`
+	Version   int           `json:"version"`
+	CreatedAt *time.Time    `json:"created_at"`
+	UpdatedAt *time.Time    `json:"updated_at"`
+	AppURL    string        `json:"app_url"`
+	DatasetID string        `json:"dataset_id"`
+	Legacy    *LegacyNotice `json:"legacy"`
 }
 
-// OutputColumns decodes Output as a dataset-engine recipe's column list. It
-// returns nil, nil when Output is empty or not a list.
+// OutputColumns decodes Output as the recipe's column list. It returns nil, nil
+// when Output is empty or not a list (a legacy enrichment's shape).
 func (e *Enrichment) OutputColumns() ([]OutputColumnSpec, error) {
 	if len(e.Output) == 0 || e.Output[0] != '[' {
 		return nil, nil
@@ -300,24 +306,10 @@ func (e *Enrichment) OutputColumns() ([]OutputColumnSpec, error) {
 	return columns, nil
 }
 
-// LegacyOutput decodes Output as a legacy enrichment's per-column config. It
-// returns nil, nil when Output is empty or not an object.
-func (e *Enrichment) LegacyOutput() (map[string]OutputColumnConfig, error) {
-	if len(e.Output) == 0 || e.Output[0] != '{' {
-		return nil, nil
-	}
-	var columns map[string]OutputColumnConfig
-	if err := json.Unmarshal(e.Output, &columns); err != nil {
-		return nil, fmt.Errorf("riveter: decode enrichment output: %w", err)
-	}
-	return columns, nil
-}
-
 // CreateEnrichmentParams is the request body for Enrichments.Create. Prompt +
 // Output save a recipe (an empty Dataset bound to it comes back as DatasetID on
-// the response); DatasetID alone takes the enrichment of a Dataset or one shaped
-// from a finished legacy list build. Output entries are OutputColumnSpec values
-// or plain column-name strings.
+// the response); DatasetID alone takes a Dataset's own enrichment. Output
+// entries are OutputColumnSpec values or plain column-name strings.
 type CreateEnrichmentParams struct {
 	DatasetID       string   `json:"dataset_id,omitempty"`
 	Name            string   `json:"name,omitempty"`
@@ -357,10 +349,9 @@ func (op OutputColumnOperation) MarshalJSON() ([]byte, error) {
 	return json.Marshal(wire)
 }
 
-// UpdateEnrichmentParams is the request body for Enrichments.Update. On a
-// dataset-engine enrichment: Name, Prompt, InputColumns, Budget, BudgetLocked,
-// the tool lists, and Output operations. On a legacy enrichment: LegacyOutput
-// keyed by column name plus ColumnOrder.
+// UpdateEnrichmentParams is the request body for Enrichments.Update: Name,
+// Prompt, InputColumns, Budget, BudgetLocked, the tool lists, and Output
+// operations keyed by column name.
 type UpdateEnrichmentParams struct {
 	Name            string                           `json:"name,omitempty"`
 	Prompt          string                           `json:"prompt,omitempty"`
@@ -369,36 +360,7 @@ type UpdateEnrichmentParams struct {
 	BudgetLocked    *bool                            `json:"budget_locked,omitempty"`
 	OnlyTools       []string                         `json:"only_tools,omitempty"`
 	AdditionalTools []string                         `json:"additional_tools,omitempty"`
-	Output          map[string]OutputColumnOperation `json:"-"`
-	LegacyOutput    map[string]OutputColumnConfig    `json:"-"`
-	ColumnOrder     []string                         `json:"column_order,omitempty"`
-}
-
-// MarshalJSON writes whichever of Output / LegacyOutput is set under "output".
-func (p UpdateEnrichmentParams) MarshalJSON() ([]byte, error) {
-	type plain UpdateEnrichmentParams
-	wire := struct {
-		plain
-		Output any `json:"output,omitempty"`
-	}{plain: plain(p)}
-	if p.Output != nil {
-		wire.Output = p.Output
-	} else if p.LegacyOutput != nil {
-		wire.Output = p.LegacyOutput
-	}
-	return json.Marshal(wire)
-}
-
-// BuildDatasetForEnrichmentParams is the body for Enrichments.BuildDataset (legacy).
-type BuildDatasetForEnrichmentParams struct {
-	Prompt                      string   `json:"prompt"`
-	Qualifiers                  []string `json:"qualifiers,omitempty"`
-	MaxItems                    int      `json:"max_items,omitempty"`
-	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
-	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
-	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
-	EstimateCost                bool     `json:"estimate_cost,omitempty"`
-	MaxCredits                  *float64 `json:"max_credits,omitempty"`
+	Output          map[string]OutputColumnOperation `json:"output,omitempty"`
 }
 
 // DatasetCell is one cell. State is pending / running / ok / not_found /
@@ -610,34 +572,6 @@ type ToolCatalog struct {
 	} `json:"budget"`
 }
 
-// BuildDatasetParams is the legacy list-build body of Datasets.Build (MaxItems,
-// Identifiers, ...). On an account on Datasets the rows land in a Dataset named
-// by the run's DatasetID. New work: Datasets.Create.
-type BuildDatasetParams struct {
-	Prompt                      string   `json:"prompt,omitempty"`
-	Identifiers                 []string `json:"identifiers,omitempty"`
-	Qualifiers                  []string `json:"qualifiers,omitempty"`
-	Attributes                  []string `json:"attributes,omitempty"`
-	MaxItems                    int      `json:"max_items,omitempty"`
-	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
-	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
-	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
-	EstimateCost                bool     `json:"estimate_cost,omitempty"`
-	MaxCredits                  *float64 `json:"max_credits,omitempty"`
-}
-
-// ExtendDatasetParams is the request body for Datasets.Extend.
-type ExtendDatasetParams struct {
-	Prompt                      string   `json:"prompt,omitempty"`
-	Qualifiers                  []string `json:"qualifiers,omitempty"`
-	MaxItems                    int      `json:"max_items,omitempty"`
-	DatasetWebhookURL           string   `json:"dataset_webhook_url,omitempty"`
-	AutoRunEnrichment           bool     `json:"auto_run_enrichment,omitempty"`
-	AutoRunEnrichmentWebhookURL string   `json:"auto_run_enrichment_webhook_url,omitempty"`
-	EstimateCost                bool     `json:"estimate_cost,omitempty"`
-	MaxCredits                  *float64 `json:"max_credits,omitempty"`
-}
-
 // BuildConfiguredDatasetParams is the body for ConfiguredDatasets.Build.
 type BuildConfiguredDatasetParams struct {
 	Parameters        map[string]string `json:"parameters,omitempty"`
@@ -686,12 +620,18 @@ type RunExtractionParams struct {
 	MaxCredits   *float64          `json:"max_credits,omitempty"`
 }
 
-// CreateMonitorParams is the request body for Monitors.Create. Minute and
-// Hour are always sent (0 is valid for both). Creation is free; EstimateCost prices
-// ONE scheduled run over Input and MaxCredits refuses the monitor when that
-// estimate is higher.
+// CreateMonitorParams is the request body for Monitors.Create: DatasetID (or
+// EnrichmentID naming the dataset's enrichment), the cadence, and optionally
+// Columns, the output column names each tick fills (every one when omitted).
+// AlertRule is each_run / on_diff / disabled; OutputFormat is current_only /
+// include_diffs. Minute and Hour are always sent (0 is valid for both).
+// Creation is free; EstimateCost prices ONE tick and MaxCredits refuses the
+// monitor when that estimate is higher. Input belongs to a monitor on a legacy
+// enrichment only.
 type CreateMonitorParams struct {
-	EnrichmentID   string              `json:"enrichment_id"`
+	DatasetID      string              `json:"dataset_id,omitempty"`
+	EnrichmentID   string              `json:"enrichment_id,omitempty"`
+	Columns        []string            `json:"columns,omitempty"`
 	Cadence        string              `json:"cadence"`
 	Minute         int                 `json:"minute"`
 	Hour           int                 `json:"hour"`
@@ -708,13 +648,34 @@ type CreateMonitorParams struct {
 }
 
 // UpdateMonitorParams is the request body for Monitors.Update. Enabled is a
-// pointer so `false` (pause) still serializes.
+// pointer so `false` (pause) still serializes. Columns replaces the output
+// columns a tick fills; EveryColumn sends columns: null (every output column again).
 type UpdateMonitorParams struct {
-	Enabled    *bool  `json:"enabled,omitempty"`
-	WebhookURL string `json:"webhook_url,omitempty"`
+	Enabled     *bool    `json:"enabled,omitempty"`
+	WebhookURL  string   `json:"webhook_url,omitempty"`
+	Columns     []string `json:"-"`
+	EveryColumn bool     `json:"-"`
 }
 
-// Monitor is a scheduled enrichment run.
+// MarshalJSON writes Columns, or "columns": null when EveryColumn is set.
+func (p UpdateMonitorParams) MarshalJSON() ([]byte, error) {
+	type plain UpdateMonitorParams
+	if p.EveryColumn {
+		return json.Marshal(struct {
+			plain
+			Columns *[]string `json:"columns"`
+		}{plain: plain(p)})
+	}
+	return json.Marshal(struct {
+		plain
+		Columns []string `json:"columns,omitempty"`
+	}{plain: plain(p), Columns: p.Columns})
+}
+
+// Monitor fills DatasetID's Columns (every output column when empty) again on a
+// schedule. EnrichmentName and HasInput belong to a monitor on a legacy
+// enrichment; Legacy is set on Get / Update of one (list items carry the JSON
+// boolean true, which decodes as nil here: read LegacyListItem).
 type Monitor struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
@@ -730,13 +691,40 @@ type Monitor struct {
 	OutputFormat    string     `json:"output_format"`
 	NextRunAt       *time.Time `json:"next_run_at"`
 	ScheduleSummary string     `json:"schedule_summary"`
+	DatasetID       string     `json:"dataset_id"`
+	DatasetName     string     `json:"dataset_name"`
+	Columns         []string   `json:"columns"`
 	EnrichmentID    string     `json:"enrichment_id"`
 	EnrichmentName  string     `json:"enrichment_name"`
 	CreatedAt       *time.Time `json:"created_at"`
 	HasInput        bool       `json:"has_input"`
-	// Set on an EstimateCost call of Monitors.Create: the estimate for one scheduled run.
+	// Legacy is the notice on Get / Update of a monitor on a legacy enrichment;
+	// LegacyListItem is true on such an item of List.
+	Legacy         *LegacyNotice `json:"-"`
+	LegacyListItem bool          `json:"-"`
+	// Set on an EstimateCost call of Monitors.Create: the estimate for one tick.
 	CreditDetail *CreditDetail `json:"credit_detail"`
 	EstimateCost bool          `json:"estimate_cost"`
+}
+
+// UnmarshalJSON reads "legacy" as either the boolean of a list item or the notice object.
+func (m *Monitor) UnmarshalJSON(data []byte) error {
+	type plain Monitor
+	wire := struct {
+		*plain
+		Legacy json.RawMessage `json:"legacy"`
+	}{plain: (*plain)(m)}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.Legacy) == 0 || string(wire.Legacy) == "null" {
+		return nil
+	}
+	if wire.Legacy[0] == '{' {
+		m.Legacy = &LegacyNotice{}
+		return json.Unmarshal(wire.Legacy, m.Legacy)
+	}
+	return json.Unmarshal(wire.Legacy, &m.LegacyListItem)
 }
 
 // ListMonitorRunsParams filters GET /monitors/{id}/runs.

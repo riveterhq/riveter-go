@@ -35,15 +35,6 @@ func (s *EnrichmentsService) List(ctx context.Context, params *ListEnrichmentsPa
 	return s.client.fetchEnrichmentsPage(ctx, query, page)
 }
 
-// Summary returns all-time enrichment counts by status. (operationId: enrichmentsSummary)
-func (s *EnrichmentsService) Summary(ctx context.Context) (*EnrichmentsSummary, error) {
-	summary := &EnrichmentsSummary{}
-	if err := s.client.request(ctx, http.MethodGet, "/enrichments/summary", nil, nil, summary); err != nil {
-		return nil, err
-	}
-	return summary, nil
-}
-
 // EnrichmentsPage is one page of enrichments plus the pagination cursor.
 type EnrichmentsPage struct {
 	Enrichments []EnrichmentSummary `json:"enrichments"`
@@ -84,8 +75,7 @@ func (c *Client) fetchEnrichmentsPage(ctx context.Context, baseQuery url.Values,
 
 // Create saves an enrichment (no run). A recipe body — Prompt + Output — saves
 // the column configuration and makes an empty Dataset bound to it (DatasetID /
-// AppURL on the response); DatasetID alone takes the enrichment of a Dataset
-// or one shaped from a finished legacy list build. (operationId: createEnrichment)
+// AppURL on the response); DatasetID alone takes a Dataset's own enrichment. (operationId: createEnrichment)
 func (s *EnrichmentsService) Create(ctx context.Context, params CreateEnrichmentParams) (*Enrichment, error) {
 	enrichment := &Enrichment{}
 	if err := s.client.request(ctx, http.MethodPost, "/enrichments", nil, params, enrichment); err != nil {
@@ -110,8 +100,7 @@ func (s *EnrichmentsService) Get(ctx context.Context, id string) (*Enrichment, e
 }
 
 // Update edits the enrichment: name, prompt, input columns, budget, tools, and
-// Output column operations (add / rename / delete by name) on a dataset-engine
-// enrichment; LegacyOutput + ColumnOrder on a legacy one. Refused with 409
+// Output column operations (add / rename / delete by name). Refused with 409
 // enrichment_in_use while a fill runs on it. (operationId: updateEnrichment)
 func (s *EnrichmentsService) Update(ctx context.Context, id string, params UpdateEnrichmentParams) (*Enrichment, error) {
 	enrichment := &Enrichment{}
@@ -119,16 +108,6 @@ func (s *EnrichmentsService) Update(ctx context.Context, id string, params Updat
 		return nil, err
 	}
 	return enrichment, nil
-}
-
-// BuildDataset is the legacy list build shaped for an enrichment. New work:
-// Datasets.BuildRows on the enrichment's dataset. (operationId: buildDatasetForEnrichment)
-func (s *EnrichmentsService) BuildDataset(ctx context.Context, id string, params BuildDatasetForEnrichmentParams) (*Run, error) {
-	run := &Run{}
-	if err := s.client.request(ctx, http.MethodPost, "/enrichments/"+url.PathEscape(id)+"/datasets", nil, params, run); err != nil {
-		return nil, err
-	}
-	return run, nil
 }
 
 // DatasetsService manages datasets: kept tables of input rows and the output
@@ -289,27 +268,6 @@ func (s *DatasetsService) Export(ctx context.Context, id string, outputFormat st
 	return content, nil
 }
 
-// Build is the legacy list build (MaxItems, Identifiers, ...). On an account on
-// Datasets the rows land in a Dataset named by the run's DatasetID. New work:
-// Datasets.Create. (operationId: buildDataset)
-func (s *DatasetsService) Build(ctx context.Context, params BuildDatasetParams) (*Run, error) {
-	run := &Run{}
-	if err := s.client.request(ctx, http.MethodPost, "/datasets", nil, params, run); err != nil {
-		return nil, err
-	}
-	return run, nil
-}
-
-// Extend is the legacy way to generate more rows for a finished list build. On
-// a Dataset id prefer Datasets.BuildRows. (operationId: extendDataset)
-func (s *DatasetsService) Extend(ctx context.Context, id string, params ExtendDatasetParams) (*Run, error) {
-	run := &Run{}
-	if err := s.client.request(ctx, http.MethodPost, "/datasets/"+url.PathEscape(id)+"/extend", nil, params, run); err != nil {
-		return nil, err
-	}
-	return run, nil
-}
-
 // DatasetRowsPage is one page of dataset rows plus the cursor of the next.
 type DatasetRowsPage struct {
 	Rows []DatasetRow `json:"rows"`
@@ -423,12 +381,14 @@ func (s *ExtractionsService) Run(ctx context.Context, id string, params RunExtra
 	return run, nil
 }
 
-// MonitorsService manages scheduled enrichment runs with webhooks.
+// MonitorsService manages monitors: a dataset's output columns filled again on
+// a schedule, with diffs and webhooks.
 type MonitorsService struct {
 	client *Client
 }
 
-// Create creates a monitor that re-runs an enrichment on a schedule. (operationId: createMonitor)
+// Create creates a monitor that fills a dataset again on a schedule (DatasetID,
+// optionally Columns). (operationId: createMonitor)
 func (s *MonitorsService) Create(ctx context.Context, params CreateMonitorParams) (*Monitor, error) {
 	monitor := &Monitor{}
 	if err := s.client.request(ctx, http.MethodPost, "/monitors", nil, params, monitor); err != nil {
@@ -457,7 +417,8 @@ func (s *MonitorsService) Get(ctx context.Context, id string) (*Monitor, error) 
 	return monitor, nil
 }
 
-// Update pauses, resumes, or repoints a monitor. (operationId: updateMonitor)
+// Update pauses, resumes, repoints the webhook, or changes the Columns a tick
+// fills. (operationId: updateMonitor)
 func (s *MonitorsService) Update(ctx context.Context, id string, params UpdateMonitorParams) (*Monitor, error) {
 	monitor := &Monitor{}
 	if err := s.client.request(ctx, http.MethodPatch, "/monitors/"+url.PathEscape(id), nil, params, monitor); err != nil {

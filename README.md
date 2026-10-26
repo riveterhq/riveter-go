@@ -108,8 +108,8 @@ csv, err := client.Datasets.Export(ctx, dataset.ID, "csv")
 
 - `client.Enrich`, `client.QuickSearch`, `client.SearchAgent`, `client.Scrape`, `client.Account`
 - `client.Runs` — `Get`, `Result`, `Stop`, `List`, `Summary`, `WaitForResult`
-- `client.Enrichments` — `List`, `Summary`, `Create`, `Get`, `Update`, `Delete`, `BuildDataset` (legacy)
-- `client.Datasets` — `List`, `Create`, `Get`, `Update`, `Delete`, `ListRows`, `AddRows`, `DeleteRows`, `UpdateRow`, `ImportRows`, `BuildRows`, `PromoteColumn`, `Export`; legacy `Build`, `Extend`
+- `client.Enrichments` — `List`, `Create`, `Get`, `Update`, `Delete`
+- `client.Datasets` — `List`, `Create`, `Get`, `Update`, `Delete`, `ListRows`, `AddRows`, `DeleteRows`, `UpdateRow`, `ImportRows`, `BuildRows`, `PromoteColumn`, `Export`
 - `client.Tools` — `List`
 - `client.ConfiguredDatasets` — `Build`
 - `client.Extractions` — `Create`, `Get`, `Run`

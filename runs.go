@@ -67,6 +67,9 @@ func (s *RunsService) List(ctx context.Context, params *ListRunsParams) (*RunsPa
 		if params.EnrichmentID != "" {
 			query.Set("enrichment_id", params.EnrichmentID)
 		}
+		if params.DatasetID != "" {
+			query.Set("dataset_id", params.DatasetID)
+		}
 		if params.MonitorID != "" {
 			query.Set("monitor_id", params.MonitorID)
 		}
