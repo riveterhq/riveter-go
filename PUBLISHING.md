@@ -6,12 +6,14 @@ only this directory. There is no registry upload; "publishing" is pushing the mi
 and tagging.
 
 `.github/workflows/publish-clients.yml` (`go-mirror` job) does both on every push to
-`main` that touches this directory: it runs `gofmt` / `go vet` / `go test`, splits the
-directory with `git subtree split`, force-pushes the split over the mirror's `main`
-with the `MIRROR_PUSH_TOKEN` secret, and, when the mirror has no `v<Version>` tag for
-the `Version` const in `riveter.go`, tags the split commit and pushes the tag (that
-tag is the publish), then asks `proxy.golang.org` for it so the proxy caches it.
-Never push from an agent (see the repo git rules); the workflow and the user do.
+`main` that touches this directory: it runs `gofmt` / `go vet` / `go test`, pushes one
+snapshot commit of this directory onto the mirror's `main` with the `MIRROR_PUSH_TOKEN`
+secret (`sdk/scripts/push-mirror-snapshot.sh`; the monorepo's commits never reach the
+mirror, and nothing is pushed when the mirror already carries the tree), and, when the
+mirror has no `v<Version>` tag for the `Version` const in `riveter.go`, tags the
+snapshot and pushes the tag (that tag is the publish), then asks `proxy.golang.org` for
+it so the proxy caches it. Never push from an agent (see the repo git rules); the
+workflow and the user do.
 
 ## Release checklist
 
@@ -32,11 +34,8 @@ Never push from an agent (see the repo git rules); the workflow and the user do.
 The same steps, from the monorepo root on `main`, when the workflow cannot run:
 
 ```bash
-git subtree split --prefix=sdk/go -b riveter-go-sync
-git push git@github.com:riveterhq/riveter-go.git riveter-go-sync:main
-git tag vX.Y.Z riveter-go-sync
-git push git@github.com:riveterhq/riveter-go.git vX.Y.Z
-git tag -d vX.Y.Z && git branch -D riveter-go-sync
+commit=$(sdk/scripts/push-mirror-snapshot.sh sdk/go git@github.com:riveterhq/riveter-go.git "riveter-go X.Y.Z")
+git push git@github.com:riveterhq/riveter-go.git "${commit}:refs/tags/vX.Y.Z"
 ```
 
 ## One-time setup (done)
