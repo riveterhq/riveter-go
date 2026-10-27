@@ -433,7 +433,8 @@ type DatasetListItem struct {
 
 // CreateDatasetParams is the request body for Datasets.Create: rows sent inline
 // (Rows, ≤ 100 per call; more through AddRows / ImportRows), generated from
-// Prompt + Count (a paid list build; EstimateCost prices it), or empty (Name /
+// Prompt + Count (a paid list build on a credit Budget, default 50 + 1.5 per row;
+// EstimateCost prices it), or empty (Name /
 // InputColumns alone). EnrichmentID binds a saved recipe; AutoFill starts the
 // fill once the rows land.
 type CreateDatasetParams struct {
@@ -442,6 +443,7 @@ type CreateDatasetParams struct {
 	Rows           []map[string]string `json:"rows,omitempty"`
 	Prompt         string              `json:"prompt,omitempty"`
 	Count          int                 `json:"count,omitempty"`
+	Budget         *float64            `json:"budget,omitempty"`
 	EnrichmentID   string              `json:"enrichment_id,omitempty"`
 	Attributes     []string            `json:"attributes,omitempty"`
 	AutoFill       bool                `json:"auto_fill,omitempty"`
@@ -523,10 +525,12 @@ type DatasetImportResult struct {
 }
 
 // BuildDatasetRowsParams is the request body for Datasets.BuildRows: generate
-// Count more rows (a paid list build); AutoFill fills them once they land.
+// Count more rows (a paid list build on a credit Budget, default 50 + 1.5 per row);
+// AutoFill fills them once they land.
 type BuildDatasetRowsParams struct {
 	Prompt         string   `json:"prompt,omitempty"`
 	Count          int      `json:"count"`
+	Budget         *float64 `json:"budget,omitempty"`
 	AutoFill       bool     `json:"auto_fill,omitempty"`
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	FillWebhookURL string   `json:"fill_webhook_url,omitempty"`
