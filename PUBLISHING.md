@@ -12,16 +12,16 @@ secret (`sdk/scripts/push-mirror-snapshot.sh`; the monorepo's commits never reac
 mirror, and nothing is pushed when the mirror already carries the tree), and, when the
 mirror has no `v<Version>` tag for the `Version` const in `riveter.go`, tags the
 snapshot and pushes the tag (that tag is the publish), then asks `proxy.golang.org` for
-it so the proxy caches it. Never push from an agent (see the repo git rules); the
-workflow and the user do.
+it so the proxy caches it. The by-hand fallback below pushes with the engineer's own
+GitHub credentials and is the engineer's step, not an agent's.
 
 ## Release checklist
 
 1. Bump the `Version` const in `riveter.go` (sent in the User-Agent header). The
    four SDKs share one version number.
 2. Run the checks: `cd sdk/go && gofmt -l . && go vet ./... && go build ./...` (no unit tests).
-3. Commit the changes to the monorepo as usual and merge to `main`. The workflow
-   pushes the mirror and tags `vX.Y.Z`; `published-versions.yml` fails the push
+3. Commit the changes to the monorepo as usual and merge to `main` through a PR. The workflow
+   pushes the mirror and tags `vX.Y.Z`; `published-versions.yml` fails the pull request
    when the source changed without a bump.
 4. Verify (also warms the module proxy if the workflow's warm-up did not):
 
