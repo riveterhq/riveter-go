@@ -480,6 +480,50 @@ type ListDatasetRowsParams struct {
 	Cursor int
 	// UpdatedSince (ISO 8601) returns only rows changed since then.
 	UpdatedSince string
+	// Columns are the column names (input or output) to keep; empty keeps every column.
+	Columns []string
+}
+
+// CompactDatasetRow is a row as Datasets.ListRowsCompact answers it: the values
+// alone. Cells holds each output column's value (nil when the cell has none).
+// Address the row by Position elsewhere.
+type CompactDatasetRow struct {
+	Position int                `json:"position"`
+	Input    map[string]*string `json:"input"`
+	Cells    map[string]any     `json:"cells"`
+}
+
+// GetDatasetSummaryParams narrows Datasets.Summary.
+type GetDatasetSummaryParams struct {
+	// Columns are the column names to summarize; empty summarizes every column.
+	Columns []string
+	// TopValues is how many of a column's most common values to list (1–100, default 20).
+	TopValues int
+}
+
+// DatasetColumnValueCount is one of a column's most common values (a string is
+// cut at 200 characters) and its row count.
+type DatasetColumnValueCount struct {
+	Value any `json:"value"`
+	Count int `json:"count"`
+}
+
+// DatasetColumnSummary is one column's counts over every row. States is set for
+// output columns only: the column's cells by state (pending, stale, failed,
+// not_found, ok, manual).
+type DatasetColumnSummary struct {
+	Name           string                    `json:"name"`
+	Kind           string                    `json:"kind"`
+	States         map[string]int            `json:"states"`
+	Filled         int                       `json:"filled"`
+	DistinctValues int                       `json:"distinct_values"`
+	Values         []DatasetColumnValueCount `json:"values"`
+}
+
+// DatasetSummary is the Datasets.Summary response.
+type DatasetSummary struct {
+	RowCount int                    `json:"row_count"`
+	Columns  []DatasetColumnSummary `json:"columns"`
 }
 
 // DatasetRowsAdded is the Datasets.AddRows response.

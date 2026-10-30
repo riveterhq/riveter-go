@@ -165,20 +165,57 @@ func (s *DatasetsService) Delete(ctx context.Context, id string) error {
 	return s.client.request(ctx, http.MethodDelete, "/datasets/"+url.PathEscape(id), nil, nil, nil)
 }
 
-// ListRows returns a page of rows in position order. (operationId: listDatasetRows)
+// ListRows returns a page of rows in position order. Columns keeps only the
+// named columns. (operationId: listDatasetRows)
 func (s *DatasetsService) ListRows(ctx context.Context, id string, params *ListDatasetRowsParams) (*DatasetRowsPage, error) {
-	query := url.Values{}
-	cursor := 0
-	if params != nil {
-		if params.Limit > 0 {
-			query.Set("limit", strconv.Itoa(params.Limit))
-		}
-		if params.UpdatedSince != "" {
-			query.Set("updated_since", params.UpdatedSince)
-		}
-		cursor = params.Cursor
-	}
+	query, cursor := datasetRowsQuery(params)
 	return s.client.fetchDatasetRowsPage(ctx, id, query, cursor)
+}
+
+// ListRowsCompact returns a page of rows in the values-only shape
+// (CompactDatasetRow: Position, Input, Cells as bare values), so a 1,000-row
+// page of one column (params.Columns) is one small call. (operationId: listDatasetRows)
+func (s *DatasetsService) ListRowsCompact(ctx context.Context, id string, params *ListDatasetRowsParams) (*CompactDatasetRowsPage, error) {
+	query, cursor := datasetRowsQuery(params)
+	query.Set("compact", "true")
+	return s.client.fetchCompactDatasetRowsPage(ctx, id, query, cursor)
+}
+
+func datasetRowsQuery(params *ListDatasetRowsParams) (url.Values, int) {
+	query := url.Values{}
+	if params == nil {
+		return query, 0
+	}
+	if params.Limit > 0 {
+		query.Set("limit", strconv.Itoa(params.Limit))
+	}
+	if params.UpdatedSince != "" {
+		query.Set("updated_since", params.UpdatedSince)
+	}
+	if len(params.Columns) > 0 {
+		query.Set("columns", strings.Join(params.Columns, ","))
+	}
+	return query, params.Cursor
+}
+
+// Summary returns per-column counts over every row, no rows read: an output
+// column's cells by state and its most common values; an input column's filled
+// rows and values. (operationId: getDatasetSummary)
+func (s *DatasetsService) Summary(ctx context.Context, id string, params *GetDatasetSummaryParams) (*DatasetSummary, error) {
+	query := url.Values{}
+	if params != nil {
+		if len(params.Columns) > 0 {
+			query.Set("columns", strings.Join(params.Columns, ","))
+		}
+		if params.TopValues > 0 {
+			query.Set("top_values", strconv.Itoa(params.TopValues))
+		}
+	}
+	summary := &DatasetSummary{}
+	if err := s.client.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(id)+"/summary", query, nil, summary); err != nil {
+		return nil, err
+	}
+	return summary, nil
 }
 
 // AddRows appends up to 100 rows keyed by input column name. Rows whose index
@@ -292,6 +329,52 @@ func (p *DatasetRowsPage) NextPage(ctx context.Context) (*DatasetRowsPage, error
 }
 
 func (c *Client) fetchDatasetRowsPage(ctx context.Context, datasetID string, baseQuery url.Values, cursor int) (*DatasetRowsPage, error) {
+	page := &DatasetRowsPage{}
+	if err := c.requestDatasetRows(ctx, datasetID, baseQuery, cursor, page); err != nil {
+		return nil, err
+	}
+	page.fetchPage = func(ctx context.Context, nextCursor int) (*DatasetRowsPage, error) {
+		return c.fetchDatasetRowsPage(ctx, datasetID, baseQuery, nextCursor)
+	}
+	return page, nil
+}
+
+// CompactDatasetRowsPage is one page of values-only rows (ListRowsCompact) plus
+// the cursor of the next.
+type CompactDatasetRowsPage struct {
+	Rows []CompactDatasetRow `json:"rows"`
+	// NextCursor is nil on the last page.
+	NextCursor *int `json:"next_cursor"`
+	RowCount   int  `json:"row_count"`
+
+	fetchPage func(ctx context.Context, cursor int) (*CompactDatasetRowsPage, error)
+}
+
+// HasNextPage reports whether another page follows this one.
+func (p *CompactDatasetRowsPage) HasNextPage() bool {
+	return p.NextCursor != nil
+}
+
+// NextPage fetches the following page, or ErrNoNextPage on the last one.
+func (p *CompactDatasetRowsPage) NextPage(ctx context.Context) (*CompactDatasetRowsPage, error) {
+	if !p.HasNextPage() {
+		return nil, ErrNoNextPage
+	}
+	return p.fetchPage(ctx, *p.NextCursor)
+}
+
+func (c *Client) fetchCompactDatasetRowsPage(ctx context.Context, datasetID string, baseQuery url.Values, cursor int) (*CompactDatasetRowsPage, error) {
+	page := &CompactDatasetRowsPage{}
+	if err := c.requestDatasetRows(ctx, datasetID, baseQuery, cursor, page); err != nil {
+		return nil, err
+	}
+	page.fetchPage = func(ctx context.Context, nextCursor int) (*CompactDatasetRowsPage, error) {
+		return c.fetchCompactDatasetRowsPage(ctx, datasetID, baseQuery, nextCursor)
+	}
+	return page, nil
+}
+
+func (c *Client) requestDatasetRows(ctx context.Context, datasetID string, baseQuery url.Values, cursor int, page any) error {
 	query := url.Values{}
 	for key, values := range baseQuery {
 		query[key] = values
@@ -299,15 +382,7 @@ func (c *Client) fetchDatasetRowsPage(ctx context.Context, datasetID string, bas
 	if cursor > 0 {
 		query.Set("cursor", strconv.Itoa(cursor))
 	}
-
-	page := &DatasetRowsPage{}
-	if err := c.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(datasetID)+"/rows", query, nil, page); err != nil {
-		return nil, err
-	}
-	page.fetchPage = func(ctx context.Context, nextCursor int) (*DatasetRowsPage, error) {
-		return c.fetchDatasetRowsPage(ctx, datasetID, baseQuery, nextCursor)
-	}
-	return page, nil
+	return c.request(ctx, http.MethodGet, "/datasets/"+url.PathEscape(datasetID)+"/rows", query, nil, page)
 }
 
 func joinInts(values []int) string {
