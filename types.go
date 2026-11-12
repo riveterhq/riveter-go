@@ -39,21 +39,11 @@ type CreditDetail struct {
 	SufficientCredits *bool           `json:"sufficient_credits,omitempty"`
 }
 
-// LegacyNotice is set on a response when the request took a legacy mode (a
-// legacy enrichment's id, a monitor on one, legacy-pipeline column fields):
-// what to send instead. The response also carries the Deprecation: true header.
-type LegacyNotice struct {
-	Notice string `json:"notice"`
-	// Successor is "METHOD /v1/path" of the successor.
-	Successor string `json:"successor"`
-	Docs      string `json:"docs"`
-}
-
 // Run is the uniform envelope returned by kickoffs and every /runs endpoint.
 // Endpoint-specific kickoff extras (DatasetID, CreditsCharged, ...) are only
 // set where the endpoint returns them; Output is nil until the run finishes.
 // An EstimateCost kickoff returns this shape with EstimateCost set, no ID, and the priced
-// CreditDetail. Legacy is set when the kickoff took a legacy mode.
+// CreditDetail.
 type Run struct {
 	ID             string          `json:"id"`
 	Type           string          `json:"type"`
@@ -75,7 +65,6 @@ type Run struct {
 	MonitorID      string          `json:"monitor_id"`
 	WebhookURL     string          `json:"webhook_url"`
 	Output         json.RawMessage `json:"output"`
-	Legacy         *LegacyNotice   `json:"legacy"`
 
 	MaxItems            int            `json:"max_items"`
 	ConfiguredDatasetID string         `json:"configured_dataset_id"`
@@ -162,55 +151,16 @@ type EnrichParams struct {
 	MaxCredits   *float64 `json:"max_credits,omitempty"`
 }
 
-// FormatDetails holds format-specific column options.
-type FormatDetails struct {
-	Options       []string          `json:"options,omitempty"`
-	AllowMultiple bool              `json:"allow_multiple,omitempty"`
-	Descriptions  map[string]string `json:"descriptions,omitempty"`
-	DecimalPlaces *int              `json:"decimal_places,omitempty"`
-}
-
-// RunWhenRule is one rule of a dynamic run condition.
-type RunWhenRule struct {
-	Column    string `json:"column"`
-	Condition string `json:"condition"`
-	Value     string `json:"value,omitempty"`
-}
-
-// RunWhenConfig is the rule-based run condition for run_when "dynamic".
-type RunWhenConfig struct {
-	MatchMode string        `json:"match_mode,omitempty"`
-	Rules     []RunWhenRule `json:"rules,omitempty"`
-}
-
 // OutputColumnConfig is one output column of an inline Enrich: Prompt, an
 // optional OutputSchema, an optional pinned Tool (Contexts is accepted and
-// ignored). Every other field is the legacy pipeline's: a column that sets one
-// keeps the run on the legacy pipeline and the response carries Legacy.
+// ignored).
 type OutputColumnConfig struct {
 	Prompt string `json:"prompt,omitempty"`
 	// OutputSchema is a JSON Schema for the cell value. Omitted, a plain-value type is inferred.
 	OutputSchema map[string]any `json:"output_schema,omitempty"`
-	// Tool is a name from Tools.List: one call of it per row is the cell. With the
-	// tool parameters below it is the legacy tool-only column.
+	// Tool is a name from Tools.List: one call of it per row is the cell.
 	Tool     string   `json:"tool,omitempty"`
 	Contexts []string `json:"contexts,omitempty"`
-	// Legacy pipeline fields.
-	Tools            []string          `json:"tools,omitempty"`
-	MaxToolCalls     int               `json:"max_tool_calls,omitempty"`
-	Format           string            `json:"format,omitempty"`
-	FormatDetails    *FormatDetails    `json:"format_details,omitempty"`
-	RunWhen          string            `json:"run_when,omitempty"`
-	RunWhenConfig    *RunWhenConfig    `json:"run_when_config,omitempty"`
-	URL              string            `json:"url,omitempty"`
-	Query            string            `json:"query,omitempty"`
-	DateStart        string            `json:"date_start,omitempty"`
-	DateEnd          string            `json:"date_end,omitempty"`
-	Code             string            `json:"code,omitempty"`
-	Args             map[string]string `json:"args,omitempty"`
-	ProxyCountryCode string            `json:"proxy_country_code,omitempty"`
-	WaitLonger       bool              `json:"wait_longer,omitempty"`
-	SkipCache        bool              `json:"skip_cache,omitempty"`
 }
 
 // ListRunsParams filters GET /runs.
@@ -229,8 +179,6 @@ type ListRunsParams struct {
 
 // ListEnrichmentsParams filters EnrichmentsService.List. Zero values are omitted.
 type ListEnrichmentsParams struct {
-	// Comma-separated: pending, enqueued, processing, success, stopped.
-	Status string
 	// Case-insensitive substring match on the enrichment name.
 	Name    string
 	Page    int
@@ -238,14 +186,10 @@ type ListEnrichmentsParams struct {
 }
 
 // EnrichmentSummary is the compact list-endpoint shape of an enrichment.
-// Column configuration is on EnrichmentsService.Get. Status, AppURL, and
-// DatasetID (the dataset copy to fill instead) are set on legacy enrichments only.
+// Column configuration is on EnrichmentsService.Get.
 type EnrichmentSummary struct {
 	ID                   string     `json:"id"`
 	Name                 string     `json:"name"`
-	Status               string     `json:"status"`
-	AppURL               string     `json:"app_url"`
-	DatasetID            string     `json:"dataset_id"`
 	ColumnCount          int        `json:"column_count"`
 	InputColumns         []string   `json:"input_columns"`
 	OutputColumns        []string   `json:"output_columns"`
@@ -269,9 +213,8 @@ type OutputColumnSpec struct {
 
 // Enrichment is an enrichment: Prompt, InputColumns, Output as a list of
 // OutputColumnSpec, Tools, the budget fields, and Version. DatasetID / AppURL
-// are set on Enrichments.Create. A legacy enrichment's id answers its older
-// shape (the legacy API docs) with Legacy set; Output is a json.RawMessage so
-// that shape still decodes, and OutputColumns reads the current one.
+// are set on Enrichments.Create. Output is a json.RawMessage; OutputColumns
+// decodes it.
 type Enrichment struct {
 	ID           string          `json:"id"`
 	Name         string          `json:"name"`
@@ -285,16 +228,15 @@ type Enrichment struct {
 	BudgetLocked        bool    `json:"budget_locked"`
 	// Version goes up by one on every column change; a cell filled under an
 	// older version reads stale.
-	Version   int           `json:"version"`
-	CreatedAt *time.Time    `json:"created_at"`
-	UpdatedAt *time.Time    `json:"updated_at"`
-	AppURL    string        `json:"app_url"`
-	DatasetID string        `json:"dataset_id"`
-	Legacy    *LegacyNotice `json:"legacy"`
+	Version   int        `json:"version"`
+	CreatedAt *time.Time `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	AppURL    string     `json:"app_url"`
+	DatasetID string     `json:"dataset_id"`
 }
 
 // OutputColumns decodes Output as the recipe's column list. It returns nil, nil
-// when Output is empty or not a list (a legacy enrichment's shape).
+// when Output is empty or not a list.
 func (e *Enrichment) OutputColumns() ([]OutputColumnSpec, error) {
 	if len(e.Output) == 0 || e.Output[0] != '[' {
 		return nil, nil
@@ -674,25 +616,23 @@ type RunExtractionParams struct {
 // AlertRule is each_run / on_diff / disabled; OutputFormat is current_only /
 // include_diffs. Minute and Hour are always sent (0 is valid for both).
 // Creation is free; EstimateCost prices ONE tick and MaxCredits refuses the
-// monitor when that estimate is higher. Input belongs to a monitor on a legacy
-// enrichment only.
+// monitor when that estimate is higher.
 type CreateMonitorParams struct {
-	DatasetID      string              `json:"dataset_id,omitempty"`
-	EnrichmentID   string              `json:"enrichment_id,omitempty"`
-	Columns        []string            `json:"columns,omitempty"`
-	Cadence        string              `json:"cadence"`
-	Minute         int                 `json:"minute"`
-	Hour           int                 `json:"hour"`
-	Timezone       string              `json:"timezone"`
-	DayOfWeek      *int                `json:"day_of_week,omitempty"`
-	DayOfMonth     *int                `json:"day_of_month,omitempty"`
-	WebhookURL     string              `json:"webhook_url,omitempty"`
-	AlertRule      string              `json:"alert_rule,omitempty"`
-	OutputFormat   string              `json:"output_format,omitempty"`
-	RunImmediately bool                `json:"run_immediately,omitempty"`
-	Input          map[string][]string `json:"input,omitempty"`
-	EstimateCost   bool                `json:"estimate_cost,omitempty"`
-	MaxCredits     *float64            `json:"max_credits,omitempty"`
+	DatasetID      string   `json:"dataset_id,omitempty"`
+	EnrichmentID   string   `json:"enrichment_id,omitempty"`
+	Columns        []string `json:"columns,omitempty"`
+	Cadence        string   `json:"cadence"`
+	Minute         int      `json:"minute"`
+	Hour           int      `json:"hour"`
+	Timezone       string   `json:"timezone"`
+	DayOfWeek      *int     `json:"day_of_week,omitempty"`
+	DayOfMonth     *int     `json:"day_of_month,omitempty"`
+	WebhookURL     string   `json:"webhook_url,omitempty"`
+	AlertRule      string   `json:"alert_rule,omitempty"`
+	OutputFormat   string   `json:"output_format,omitempty"`
+	RunImmediately bool     `json:"run_immediately,omitempty"`
+	EstimateCost   bool     `json:"estimate_cost,omitempty"`
+	MaxCredits     *float64 `json:"max_credits,omitempty"`
 }
 
 // UpdateMonitorParams is the request body for Monitors.Update. Enabled is a
@@ -721,9 +661,7 @@ func (p UpdateMonitorParams) MarshalJSON() ([]byte, error) {
 }
 
 // Monitor fills DatasetID's Columns (every output column when empty) again on a
-// schedule. EnrichmentName and HasInput belong to a monitor on a legacy
-// enrichment; Legacy is set on Get / Update of one (list items carry the JSON
-// boolean true, which decodes as nil here: read LegacyListItem).
+// schedule.
 type Monitor struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
@@ -743,36 +681,10 @@ type Monitor struct {
 	DatasetName     string     `json:"dataset_name"`
 	Columns         []string   `json:"columns"`
 	EnrichmentID    string     `json:"enrichment_id"`
-	EnrichmentName  string     `json:"enrichment_name"`
 	CreatedAt       *time.Time `json:"created_at"`
-	HasInput        bool       `json:"has_input"`
-	// Legacy is the notice on Get / Update of a monitor on a legacy enrichment;
-	// LegacyListItem is true on such an item of List.
-	Legacy         *LegacyNotice `json:"-"`
-	LegacyListItem bool          `json:"-"`
 	// Set on an EstimateCost call of Monitors.Create: the estimate for one tick.
 	CreditDetail *CreditDetail `json:"credit_detail"`
 	EstimateCost bool          `json:"estimate_cost"`
-}
-
-// UnmarshalJSON reads "legacy" as either the boolean of a list item or the notice object.
-func (m *Monitor) UnmarshalJSON(data []byte) error {
-	type plain Monitor
-	wire := struct {
-		*plain
-		Legacy json.RawMessage `json:"legacy"`
-	}{plain: (*plain)(m)}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-	if len(wire.Legacy) == 0 || string(wire.Legacy) == "null" {
-		return nil
-	}
-	if wire.Legacy[0] == '{' {
-		m.Legacy = &LegacyNotice{}
-		return json.Unmarshal(wire.Legacy, m.Legacy)
-	}
-	return json.Unmarshal(wire.Legacy, &m.LegacyListItem)
 }
 
 // ListMonitorRunsParams filters GET /monitors/{id}/runs.
@@ -812,8 +724,8 @@ type ScrapeParams struct {
 	MaxCredits       *float64 `json:"max_credits,omitempty"`
 }
 
-// ScrapeResult is the synchronous scrape result (legacy request_status
-// format, per the spec).
+// ScrapeResult is the synchronous scrape result (request_status format, per
+// the spec).
 type ScrapeResult struct {
 	RequestStatus   string        `json:"request_status"`
 	Text            string        `json:"text"`
@@ -856,8 +768,8 @@ type APIKeyInfo struct {
 	CreatedBy  AccountUser `json:"created_by"`
 }
 
-// AccountInfo is the GET /account response (legacy request_status format,
-// per the spec).
+// AccountInfo is the GET /account response (request_status format, per the
+// spec).
 type AccountInfo struct {
 	RequestStatus string     `json:"request_status"`
 	Message       string     `json:"message"`

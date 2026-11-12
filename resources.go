@@ -13,15 +13,12 @@ type EnrichmentsService struct {
 	client *Client
 }
 
-// List returns a paginated compact list of enrichments: names, status, column
-// names and counts. (operationId: listEnrichments)
+// List returns a paginated compact list of enrichments: names, column names
+// and counts. (operationId: listEnrichments)
 func (s *EnrichmentsService) List(ctx context.Context, params *ListEnrichmentsParams) (*EnrichmentsPage, error) {
 	query := url.Values{}
 	page := 1
 	if params != nil {
-		if params.Status != "" {
-			query.Set("status", params.Status)
-		}
 		if params.Name != "" {
 			query.Set("name", params.Name)
 		}

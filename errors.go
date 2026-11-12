@@ -31,7 +31,7 @@ const (
 )
 
 // APIError is a non-2xx HTTP response, normalized across both error body
-// dialects — the clean { "error": {...} } envelope and the legacy
+// dialects — the clean { "error": {...} } envelope and the
 // { "request_status": "error" } shape (401s). Type is one of the ErrorType
 // constants, or a type this SDK does not know yet.
 type APIError struct {
