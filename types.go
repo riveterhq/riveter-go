@@ -597,6 +597,8 @@ type Extraction struct {
 	DiscoveredAt           *time.Time `json:"discovered_at"`
 	RunCreditsRequired     float64    `json:"run_credits_required"`
 	CreditsCharged         float64    `json:"credits_charged"`
+	// Why discovery left no plan. Nil unless Status is "discovery_failed".
+	Error *RunError `json:"error"`
 	// Set on the Extractions.Create response (and on an EstimateCost call of it).
 	CreditDetail *CreditDetail `json:"credit_detail"`
 	EstimateCost bool          `json:"estimate_cost"`

@@ -21,7 +21,7 @@ import (
 const defaultBaseURL = "https://api.riveterhq.com/v1"
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // Client talks to the Riveter API. Create one with NewClient.
 type Client struct {
