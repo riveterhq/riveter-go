@@ -778,3 +778,20 @@ type AccountInfo struct {
 	Account       Account    `json:"account"`
 	APIKeyInfo    APIKeyInfo `json:"api_key_info"`
 }
+
+// SubmitFeedbackParams is the request body for SubmitFeedback. Category is
+// "bug", "unclear_documentation", "missing_feature", or "other" (the default).
+type SubmitFeedbackParams struct {
+	Title       string   `json:"title"`
+	Details     string   `json:"details"`
+	Category    string   `json:"category,omitempty"`
+	ProposedFix string   `json:"proposed_fix,omitempty"`
+	ToolName    string   `json:"tool_name,omitempty"`
+	RelatedIDs  []string `json:"related_ids,omitempty"`
+}
+
+// FeedbackReceipt is the POST /feedback response.
+type FeedbackReceipt struct {
+	Received bool   `json:"received"`
+	Message  string `json:"message"`
+}

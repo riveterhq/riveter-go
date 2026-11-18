@@ -21,7 +21,7 @@ import (
 const defaultBaseURL = "https://api.riveterhq.com/v1"
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "1.3.0"
+const Version = "1.4.0"
 
 // Client talks to the Riveter API. Create one with NewClient.
 type Client struct {
@@ -144,6 +144,16 @@ func (c *Client) Account(ctx context.Context) (*AccountInfo, error) {
 		return nil, err
 	}
 	return info, nil
+}
+
+// SubmitFeedback sends the Riveter team a report about the API or its tools;
+// free. (operationId: submitFeedback)
+func (c *Client) SubmitFeedback(ctx context.Context, params SubmitFeedbackParams) (*FeedbackReceipt, error) {
+	receipt := &FeedbackReceipt{}
+	if err := c.request(ctx, http.MethodPost, "/feedback", nil, params, receipt); err != nil {
+		return nil, err
+	}
+	return receipt, nil
 }
 
 // requestBody is a request body sent as-is under its own content type (CSV imports).

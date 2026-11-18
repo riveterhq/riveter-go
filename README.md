@@ -106,7 +106,7 @@ csv, err := client.Datasets.Export(ctx, dataset.ID, "csv")
 
 ## Surface
 
-- `client.Enrich`, `client.QuickSearch`, `client.SearchAgent`, `client.Scrape`, `client.Account`
+- `client.Enrich`, `client.QuickSearch`, `client.SearchAgent`, `client.Scrape`, `client.Account`, `client.SubmitFeedback`
 - `client.Runs` — `Get`, `Result`, `Stop`, `List`, `Summary`, `WaitForResult`
 - `client.Enrichments` — `List`, `Create`, `Get`, `Update`, `Delete`
 - `client.Datasets` — `List`, `Create`, `Get`, `Update`, `Delete`, `ListRows`, `AddRows`, `DeleteRows`, `UpdateRow`, `ImportRows`, `BuildRows`, `PromoteColumn`, `Export`
